@@ -101,7 +101,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: runbrake/runbrake-oss/.github/actions/runbrake-skill-scan@main
+      - uses: runbrake/runbrake-oss/.github/actions/runbrake-skill-scan@v0.1.0
         with:
           path: .
           version: v0.1.0
