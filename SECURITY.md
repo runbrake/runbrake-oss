@@ -4,7 +4,7 @@ RunBrake Scanner reviews security-sensitive OpenClaw artifacts. Please report vu
 
 ## Reporting A Vulnerability
 
-Email security reports to `security@runbrake.dev`.
+Email security reports to `security@runbrake.com`.
 
 Include:
 

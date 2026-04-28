@@ -115,7 +115,7 @@ const stringRecordSchema = {
 } as const;
 
 export const findingSchema = {
-  $id: "https://runbrake.dev/schemas/finding.json",
+  $id: "https://runbrake.com/schemas/finding.json",
   type: "object",
   additionalProperties: false,
   required: [
@@ -142,7 +142,7 @@ export const findingSchema = {
 } as const;
 
 export const scanReportSchema = {
-  $id: "https://runbrake.dev/schemas/scan-report.json",
+  $id: "https://runbrake.com/schemas/scan-report.json",
   type: "object",
   additionalProperties: false,
   required: [
@@ -180,7 +180,7 @@ export const scanReportSchema = {
 } as const;
 
 export const toolCallEventSchema = {
-  $id: "https://runbrake.dev/schemas/tool-call-event.json",
+  $id: "https://runbrake.com/schemas/tool-call-event.json",
   type: "object",
   additionalProperties: false,
   required: [
@@ -211,7 +211,7 @@ export const toolCallEventSchema = {
 } as const;
 
 export const installEventSchema = {
-  $id: "https://runbrake.dev/schemas/install-event.json",
+  $id: "https://runbrake.com/schemas/install-event.json",
   type: "object",
   additionalProperties: false,
   required: ["id", "kind", "observedAt"],
@@ -232,7 +232,7 @@ export const installEventSchema = {
 } as const;
 
 export const policyDecisionSchema = {
-  $id: "https://runbrake.dev/schemas/policy-decision.json",
+  $id: "https://runbrake.com/schemas/policy-decision.json",
   type: "object",
   additionalProperties: false,
   required: [
@@ -269,7 +269,7 @@ export const policyDecisionSchema = {
 } as const;
 
 export const approvalRequestSchema = {
-  $id: "https://runbrake.dev/schemas/approval-request.json",
+  $id: "https://runbrake.com/schemas/approval-request.json",
   type: "object",
   additionalProperties: false,
   required: [
@@ -300,7 +300,7 @@ export const approvalRequestSchema = {
 } as const;
 
 export const auditEventSchema = {
-  $id: "https://runbrake.dev/schemas/audit-event.json",
+  $id: "https://runbrake.com/schemas/audit-event.json",
   type: "object",
   additionalProperties: false,
   required: [

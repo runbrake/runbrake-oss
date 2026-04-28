@@ -33,7 +33,7 @@ func TestGitHubActionEmitsSARIFWithoutRunBrakeCredentials(t *testing.T) {
 	for _, forbidden := range []string{
 		"RUNBRAKE_API_KEY",
 		"RUNBRAKE_TOKEN",
-		"runbrake.dev/api",
+		"runbrake.com/api",
 		"go run ./cmd/runbrake",
 		"go install github.com/runbrake/runbrake-oss",
 	} {

@@ -304,7 +304,7 @@ func RenderRegistrySARIF(result registry.RegistryScanReport) (string, error) {
 
 	run := sarifRun{}
 	run.Tool.Driver.Name = "RunBrake Registry Scan"
-	run.Tool.Driver.InformationURI = "https://runbrake.dev"
+	run.Tool.Driver.InformationURI = "https://runbrake.com"
 
 	seenRules := map[string]bool{}
 	for _, skill := range result.Skills {

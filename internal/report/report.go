@@ -125,7 +125,7 @@ func RenderSARIF(result doctor.Result) (string, error) {
 
 	run := sarifRun{}
 	run.Tool.Driver.Name = reportName(result)
-	run.Tool.Driver.InformationURI = "https://runbrake.dev"
+	run.Tool.Driver.InformationURI = "https://runbrake.com"
 
 	seenRules := map[string]bool{}
 	for _, finding := range result.Report.Findings {
