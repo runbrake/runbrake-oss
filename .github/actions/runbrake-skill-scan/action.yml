@@ -13,7 +13,7 @@ inputs:
   release-base-url:
     description: Base URL for public RunBrake binary-only releases.
     required: false
-    default: https://github.com/runbrake/runbrake-releases/releases/download
+    default: https://github.com/runbrake/runbrake-oss/releases/download
   sarif-file:
     description: SARIF output path.
     required: false

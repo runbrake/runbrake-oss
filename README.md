@@ -133,6 +133,13 @@ pnpm install
 pnpm run ci:check
 ```
 
+## Documentation
+
+- [Changelog](CHANGELOG.md)
+- [Roadmap](ROADMAP.md)
+- [v0.1.0 release note](docs/releases/v0.1.0.md)
+- [Release verification](docs/security/release-integrity.md)
+
 ## Security
 
 Please do not publish exploitable scanner bypasses or secret-leak issues before coordination. See [SECURITY.md](SECURITY.md).
