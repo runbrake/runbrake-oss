@@ -2,6 +2,12 @@
 .pnpm-store/
 node_modules/
 dist/
+!plugins/openclaw-policy/dist/
+plugins/openclaw-policy/dist/*
+!plugins/openclaw-policy/dist/index.d.ts
+!plugins/openclaw-policy/dist/index.d.ts.map
+!plugins/openclaw-policy/dist/index.js
+!plugins/openclaw-policy/dist/index.js.map
 coverage/
 .turbo/
 .next/

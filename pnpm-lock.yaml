@@ -23,7 +23,7 @@ importers:
   packages/contracts: {}
 
   plugins/openclaw-policy:
-    dependencies:
+    devDependencies:
       "@runbrake/contracts":
         specifier: workspace:*
         version: link:../../packages/contracts

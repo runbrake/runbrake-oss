@@ -1,14 +1,65 @@
 {
   "name": "@runbrake/openclaw-policy",
-  "version": "0.0.0",
-  "private": true,
+  "version": "0.1.0",
+  "description": "OpenClaw policy adapter for the local RunBrake sidecar.",
+  "private": false,
   "type": "module",
-  "dependencies": {
+  "license": "Apache-2.0",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist/index.d.ts",
+    "dist/index.d.ts.map",
+    "dist/index.js",
+    "dist/index.js.map",
+    "src",
+    "openclaw.plugin.json",
+    "README.md",
+    "package.json"
+  ],
+  "keywords": [
+    "openclaw",
+    "clawhub",
+    "runbrake",
+    "agent-security",
+    "policy"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/runbrake/runbrake-oss.git",
+    "directory": "plugins/openclaw-policy"
+  },
+  "openclaw": {
+    "extensions": [
+      "./src/index.ts"
+    ],
+    "runtimeExtensions": [
+      "./dist/index.js"
+    ],
+    "compat": {
+      "pluginApi": ">=2026.3.24-beta.2",
+      "minGatewayVersion": "2026.3.24-beta.2"
+    },
+    "build": {
+      "openclawVersion": "2026.4.26",
+      "pluginSdkVersion": "2026.3.24-beta.2"
+    }
+  },
+  "devDependencies": {
     "@runbrake/contracts": "workspace:*"
   },
   "scripts": {
+    "prebuild": "pnpm --filter @runbrake/contracts run build",
     "build": "tsc -p tsconfig.json",
+    "prelint": "pnpm --filter @runbrake/contracts run build",
     "lint": "tsc -p tsconfig.json --noEmit",
+    "pretest": "pnpm --filter @runbrake/contracts run build",
     "test": "tsc -p tsconfig.json && node --test dist/**/*.test.js"
   }
 }

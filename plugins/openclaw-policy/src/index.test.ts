@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 
 import {
   createBeforeInstallHandler,
@@ -19,6 +20,58 @@ test("OpenClaw policy plugin package exposes phase 3 identity", () => {
   assert.deepEqual(packageIdentity(), {
     name: "@runbrake/openclaw-policy",
     phase: "sidecar-shadow-policy",
+  });
+});
+
+test("OpenClaw policy package has ClawHub publish metadata", async () => {
+  const packageJson = JSON.parse(
+    await readFile(new URL("../package.json", import.meta.url), "utf8"),
+  ) as {
+    private?: boolean;
+    openclaw?: {
+      extensions?: string[];
+      runtimeExtensions?: string[];
+      compat?: {
+        pluginApi?: string;
+        minGatewayVersion?: string;
+      };
+      build?: {
+        openclawVersion?: string;
+        pluginSdkVersion?: string;
+      };
+    };
+  };
+  const manifest = JSON.parse(
+    await readFile(new URL("../openclaw.plugin.json", import.meta.url), "utf8"),
+  ) as {
+    id?: string;
+    name?: string;
+    description?: string;
+    configSchema?: unknown;
+  };
+
+  assert.equal(packageJson.private, false);
+  assert.deepEqual(packageJson.openclaw?.extensions, ["./src/index.ts"]);
+  assert.deepEqual(packageJson.openclaw?.runtimeExtensions, [
+    "./dist/index.js",
+  ]);
+  assert.equal(packageJson.openclaw?.compat?.pluginApi, ">=2026.3.24-beta.2");
+  assert.equal(
+    packageJson.openclaw?.compat?.minGatewayVersion,
+    "2026.3.24-beta.2",
+  );
+  assert.equal(packageJson.openclaw?.build?.openclawVersion, "2026.4.26");
+  assert.equal(
+    packageJson.openclaw?.build?.pluginSdkVersion,
+    "2026.3.24-beta.2",
+  );
+  assert.equal(manifest.id, "runbrake-policy");
+  assert.equal(manifest.name, "RunBrake Policy");
+  assert.match(manifest.description ?? "", /local RunBrake sidecar/);
+  assert.deepEqual(manifest.configSchema, {
+    type: "object",
+    additionalProperties: false,
+    properties: {},
   });
 });
 
