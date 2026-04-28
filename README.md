@@ -25,11 +25,24 @@ This is static defensive analysis. A finding means "needs review before trust," 
 
 ## Quick Start
 
+Install the published binary with Homebrew:
+
+```bash
+brew install runbrake/tap/runbrake
+runbrake
+```
+
+Or build from source:
+
 ```bash
 pnpm install
 pnpm run ci:check
 go build -o .cache/bin/runbrake ./cmd/runbrake
+```
 
+Then scan an OpenClaw install or skill:
+
+```bash
 runbrake doctor --path ~/.openclaw
 runbrake scan-skill ./skills/my-skill
 runbrake assess --path ~/.openclaw
