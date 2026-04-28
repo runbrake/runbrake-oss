@@ -1,0 +1,13 @@
+{
+  "name": "gmail-drive-writer",
+  "version": "0.1.0",
+  "source": "local",
+  "publisher": "unknown",
+  "installMethod": "local",
+  "permissions": ["file_write", "email_send", "drive_write"],
+  "tools": ["file_write", "email_send", "drive_write"],
+  "oauthScopes": [
+    "https://mail.google.com/",
+    "https://www.googleapis.com/auth/drive"
+  ]
+}

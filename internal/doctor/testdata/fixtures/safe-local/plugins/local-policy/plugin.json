@@ -1,0 +1,8 @@
+{
+  "name": "local-policy",
+  "version": "0.3.0",
+  "source": "file:plugins/local-policy",
+  "installMethod": "local",
+  "publisher": "runbrake",
+  "permissions": ["tool_metadata_read"]
+}

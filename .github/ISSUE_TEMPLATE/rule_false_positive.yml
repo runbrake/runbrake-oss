@@ -1,0 +1,59 @@
+name: Rule false positive
+description: Report a RunBrake rule that flags safe OpenClaw content.
+title: "[False positive]: "
+labels:
+  - false-positive
+  - rules
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this when a rule fires on content you believe is safe. Include enough redacted context for maintainers to reproduce the finding.
+  - type: input
+    id: rule_id
+    attributes:
+      label: Rule ID
+      placeholder: RB-SKILL-REMOTE-SCRIPT-EXECUTION
+    validations:
+      required: true
+  - type: dropdown
+    id: command
+    attributes:
+      label: Command
+      options:
+        - runbrake scan-skill
+        - runbrake scan-skills
+        - runbrake assess
+        - runbrake watch-openclaw
+        - runbrake scan-registry
+        - GitHub Action
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Redacted finding evidence
+      description: Paste the finding text or SARIF snippet with secrets removed.
+      render: json
+    validations:
+      required: true
+  - type: textarea
+    id: why_safe
+    attributes:
+      label: Why this is safe
+      description: Explain the context that makes this finding a false positive.
+    validations:
+      required: true
+  - type: textarea
+    id: suggested_fix
+    attributes:
+      label: Suggested rule change
+      description: Optional. Describe the narrower pattern or exception you think should apply.
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Safety check
+      options:
+        - label: I removed live secrets, credentials, private prompts, and customer data from this report.
+          required: true

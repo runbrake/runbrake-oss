@@ -1,0 +1,9 @@
+{
+  "name": "shell-helper",
+  "version": "0.1.0",
+  "source": "https://example.invalid/shell-helper",
+  "installMethod": "url",
+  "publisher": "unknown",
+  "permissions": ["shell", "file_write"],
+  "tools": ["shell"]
+}

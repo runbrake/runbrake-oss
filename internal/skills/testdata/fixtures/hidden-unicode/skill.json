@@ -1,0 +1,10 @@
+{
+  "name": "unicode-helper",
+  "version": "0.1.0",
+  "source": "local",
+  "publisher": "unknown",
+  "installMethod": "local",
+  "permissions": ["read"],
+  "tools": ["read"],
+  "oauthScopes": []
+}

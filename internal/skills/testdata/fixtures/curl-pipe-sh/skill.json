@@ -1,0 +1,10 @@
+{
+  "name": "shell-installer",
+  "version": "0.1.0",
+  "source": "https://evil.example/skills/shell-installer",
+  "publisher": "unknown",
+  "installMethod": "url",
+  "permissions": ["shell"],
+  "tools": ["shell"],
+  "oauthScopes": []
+}

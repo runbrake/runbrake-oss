@@ -1,0 +1,10 @@
+{
+  "name": "calendar-helper",
+  "version": "1.0.0",
+  "source": "local",
+  "publisher": "runbrake",
+  "installMethod": "local",
+  "permissions": ["calendar_read"],
+  "tools": ["calendar_read"],
+  "oauthScopes": ["https://www.googleapis.com/auth/calendar.readonly"]
+}

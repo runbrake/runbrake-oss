@@ -1,0 +1,74 @@
+name: RunBrake Skill Scan
+description: Scan OpenClaw skills locally and optionally upload SARIF to GitHub code scanning.
+
+inputs:
+  path:
+    description: Directory containing one or more OpenClaw skills.
+    required: false
+    default: .
+  version:
+    description: RunBrake binary release version to install, for example v0.1.0.
+    required: false
+    default: v0.1.0
+  release-base-url:
+    description: Base URL for public RunBrake binary-only releases.
+    required: false
+    default: https://github.com/runbrake/runbrake-releases/releases/download
+  sarif-file:
+    description: SARIF output path.
+    required: false
+    default: runbrake-skill-scan.sarif
+  upload-sarif:
+    description: Upload the generated SARIF file through GitHub code scanning.
+    required: false
+    default: "true"
+
+runs:
+  using: composite
+  steps:
+    - name: Install RunBrake binary
+      shell: bash
+      run: |
+        set -euo pipefail
+        version="${{ inputs.version }}"
+        base_url="${{ inputs.release-base-url }}"
+
+        case "${RUNNER_OS}" in
+          Linux) os="linux" ;;
+          macOS) os="darwin" ;;
+          Windows) os="windows" ;;
+          *) echo "unsupported runner OS: ${RUNNER_OS}" >&2; exit 2 ;;
+        esac
+
+        case "${RUNNER_ARCH}" in
+          X64) arch="amd64" ;;
+          ARM64) arch="arm64" ;;
+          *) echo "unsupported runner arch: ${RUNNER_ARCH}" >&2; exit 2 ;;
+        esac
+
+        archive="runbrake_${version}_${os}_${arch}.tar.gz"
+        checksums="runbrake_${version}_checksums.txt"
+        install_dir="${RUNNER_TEMP}/runbrake-${version}"
+        mkdir -p "$install_dir"
+        cd "$install_dir"
+
+        curl -fsSLO "${base_url}/${version}/${archive}"
+        curl -fsSLO "${base_url}/${version}/${checksums}"
+        grep " ${archive}$" "$checksums" | shasum -a 256 -c -
+        tar -xzf "$archive"
+        chmod +x runbrake
+        echo "$install_dir" >> "$GITHUB_PATH"
+
+    - name: Run skill scanner
+      shell: bash
+      run: |
+        set -euo pipefail
+        scan_path="${{ inputs.path }}"
+        sarif_file="${{ inputs.sarif-file }}"
+        runbrake scan-skills --format sarif --output "$sarif_file" "$scan_path"
+
+    - name: Upload SARIF
+      if: ${{ inputs.upload-sarif == 'true' }}
+      uses: github/codeql-action/upload-sarif@v3
+      with:
+        sarif_file: ${{ inputs.sarif-file }}

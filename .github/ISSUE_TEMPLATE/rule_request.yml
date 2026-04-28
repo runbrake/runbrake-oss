@@ -1,0 +1,61 @@
+name: Rule request
+description: Suggest a new RunBrake RB-* rule or rule enhancement.
+title: "[Rule request]: "
+labels:
+  - enhancement
+  - rules
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this for new static scanner rules, severity adjustments, or better remediation guidance.
+  - type: input
+    id: behavior
+    attributes:
+      label: Risky behavior to detect
+      placeholder: Skills that download unsigned binaries before shell execution
+    validations:
+      required: true
+  - type: textarea
+    id: rationale
+    attributes:
+      label: Why this is risky
+      description: Explain the security risk and expected blast radius.
+    validations:
+      required: true
+  - type: dropdown
+    id: severity
+    attributes:
+      label: Suggested severity
+      options:
+        - Critical
+        - High
+        - Medium
+        - Low
+        - Informational
+        - Unsure
+    validations:
+      required: true
+  - type: textarea
+    id: examples
+    attributes:
+      label: Safe examples or redacted snippets
+      description: Provide redacted, minimal examples. Do not include exploit details that should be reported privately.
+      render: markdown
+  - type: textarea
+    id: false_positives
+    attributes:
+      label: False-positive considerations
+      description: What safe behavior might look similar?
+  - type: textarea
+    id: remediation
+    attributes:
+      label: Suggested remediation
+      description: What should users do when the rule fires?
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Safety check
+      options:
+        - label: This request does not include live secrets, credentials, private prompts, or customer data.
+          required: true

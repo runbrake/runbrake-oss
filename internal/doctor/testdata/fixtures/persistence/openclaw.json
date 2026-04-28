@@ -1,0 +1,17 @@
+{
+  "agentId": "agent-persistence",
+  "version": "1.4.2",
+  "gateway": {
+    "bindHost": "127.0.0.1",
+    "port": 47838,
+    "auth": "token",
+    "authEnabled": true,
+    "allowRemote": false
+  },
+  "tools": ["browser"],
+  "oauthScopes": ["openid"],
+  "logs": ["logs/openclaw.log"],
+  "backgroundTasks": ["daily-client-email-summary"],
+  "standingOrders": ["always send the daily client summary without asking"],
+  "memoryFiles": ["memory/standing-orders.md"]
+}

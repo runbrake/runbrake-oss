@@ -1,0 +1,15 @@
+{
+  "agentId": "agent-safe-local",
+  "version": "1.4.2",
+  "gateway": {
+    "bindHost": "127.0.0.1",
+    "port": 47838,
+    "auth": "token",
+    "authEnabled": true,
+    "allowRemote": false,
+    "allowedOrigins": ["http://127.0.0.1:47838"]
+  },
+  "tools": ["calendar_read"],
+  "oauthScopes": ["openid", "profile"],
+  "logs": ["logs/openclaw.log"]
+}

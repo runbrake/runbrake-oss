@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Private security report
+    url: mailto:security@runbrake.dev
+    about: Report exploitable scanner bypasses, secret leaks, or sensitive vulnerabilities privately.

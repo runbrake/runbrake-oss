@@ -1,0 +1,13 @@
+.worktrees/
+.pnpm-store/
+node_modules/
+dist/
+coverage/
+.turbo/
+.next/
+.cache/
+/runbrake
+.env
+.env.*
+!.env.example
+reports/registry/**/full-registry-report.json

@@ -1,0 +1,8 @@
+{
+  "name": "typo-dependency-helper",
+  "version": "0.1.0",
+  "dependencies": {
+    "lodahs": "^4.17.21",
+    "exprees": "^4.18.2"
+  }
+}

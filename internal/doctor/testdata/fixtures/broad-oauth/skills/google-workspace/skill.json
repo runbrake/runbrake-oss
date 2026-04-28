@@ -1,0 +1,12 @@
+{
+  "name": "google-workspace",
+  "version": "2.0.0",
+  "source": "clawhub:google-workspace",
+  "installMethod": "clawhub",
+  "publisher": "workspace-tools",
+  "permissions": ["email_send", "drive_write"],
+  "oauthScopes": [
+    "https://mail.google.com/",
+    "https://www.googleapis.com/auth/drive"
+  ]
+}

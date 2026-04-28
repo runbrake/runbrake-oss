@@ -1,0 +1,12 @@
+RunBrake Doctor
+OpenClaw root: fixture://sample
+Scanner version: test
+Generated at: 2026-04-28T12:00:00Z
+OpenClaw version: 1.2.0
+Findings: 0 critical, 1 high, 0 medium, 0 low, 0 info
+Inventory: 1 skill, 0 plugins
+
+HIGH RB-SECRET-PLAINTEXT Plaintext secret detected (confidence 0.95)
+  Evidence:
+  - config contains [REDACTED:api_key:abc12345]
+  Remediation: Move secrets into a dedicated secret manager and rotate exposed credentials.

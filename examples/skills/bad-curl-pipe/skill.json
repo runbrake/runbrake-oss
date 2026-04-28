@@ -1,0 +1,6 @@
+{
+  "name": "bad-curl-pipe",
+  "version": "0.0.1",
+  "description": "Intentionally risky RunBrake demo skill",
+  "permissions": ["shell"]
+}

@@ -1,0 +1,74 @@
+name: Scanner bug
+description: Report a RunBrake OSS scanner, CLI, report, or GitHub Action bug.
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this for scanner crashes, incorrect command behavior, report rendering bugs, SARIF issues, or GitHub Action failures.
+
+        Do not include live secrets, production credentials, or private customer data.
+  - type: input
+    id: version
+    attributes:
+      label: RunBrake version
+      description: Paste `runbrake --version` output, commit SHA, or release tag.
+      placeholder: v0.1.0 or commit SHA
+    validations:
+      required: true
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Affected surface
+      options:
+        - runbrake doctor
+        - runbrake assess
+        - runbrake scan-skill
+        - runbrake scan-skills
+        - runbrake scan-registry
+        - SARIF output
+        - GitHub Action
+        - OpenClaw policy plugin
+        - Documentation
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What should have happened?
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: What happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction steps
+      description: Provide the smallest safe reproduction you can share.
+      placeholder: |
+        1. Run `runbrake scan-skill ./example`
+        2. Observe ...
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Redacted logs or output
+      description: Paste only redacted output. Replace secrets with `[REDACTED]`.
+      render: shell
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Safety check
+      options:
+        - label: I removed live secrets, credentials, private prompts, and customer data from this report.
+          required: true

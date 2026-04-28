@@ -1,0 +1,17 @@
+name: RunBrake Skill Scan
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  runbrake:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: runbrake/skill-scan-action@v0
+        with:
+          path: .
+          version: v0.1.0
+          upload-sarif: "true"
