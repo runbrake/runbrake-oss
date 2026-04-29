@@ -20,11 +20,11 @@ RunBrake OSS scans supply-chain risk, so its own releases must be verifiable bef
 The release workflow and GitHub Action installer must use the same archive names:
 
 ```text
-runbrake_v0.1.0_darwin_arm64.tar.gz
-runbrake_v0.1.0_darwin_amd64.tar.gz
-runbrake_v0.1.0_linux_arm64.tar.gz
-runbrake_v0.1.0_linux_amd64.tar.gz
-runbrake_v0.1.0_checksums.txt
+runbrake_v0.1.1_darwin_arm64.tar.gz
+runbrake_v0.1.1_darwin_amd64.tar.gz
+runbrake_v0.1.1_linux_arm64.tar.gz
+runbrake_v0.1.1_linux_amd64.tar.gz
+runbrake_v0.1.1_checksums.txt
 ```
 
 The checksums file uses standard SHA-256 lines:
@@ -38,10 +38,10 @@ The checksums file uses standard SHA-256 lines:
 Manual binary installs should verify checksums before execution:
 
 ```bash
-curl -fsSLO https://github.com/runbrake/runbrake-oss/releases/download/v0.1.0/runbrake_v0.1.0_darwin_arm64.tar.gz
-curl -fsSLO https://github.com/runbrake/runbrake-oss/releases/download/v0.1.0/runbrake_v0.1.0_checksums.txt
-grep " runbrake_v0.1.0_darwin_arm64.tar.gz$" runbrake_v0.1.0_checksums.txt | shasum -a 256 -c -
-tar -xzf runbrake_v0.1.0_darwin_arm64.tar.gz
+curl -fsSLO https://github.com/runbrake/runbrake-oss/releases/download/v0.1.1/runbrake_v0.1.1_darwin_arm64.tar.gz
+curl -fsSLO https://github.com/runbrake/runbrake-oss/releases/download/v0.1.1/runbrake_v0.1.1_checksums.txt
+grep " runbrake_v0.1.1_darwin_arm64.tar.gz$" runbrake_v0.1.1_checksums.txt | shasum -a 256 -c -
+tar -xzf runbrake_v0.1.1_darwin_arm64.tar.gz
 ./runbrake doctor --path ~/.openclaw
 ```
 
@@ -66,7 +66,7 @@ Before a release, run:
 ```bash
 pnpm install --frozen-lockfile
 pnpm run ci:check
-scripts/build-release-artifacts.sh v0.1.0
+scripts/build-release-artifacts.sh v0.1.1
 ```
 
 The CI gate checks formatting, TypeScript lint, Go vet, schema compatibility, TypeScript tests, Go tests, TypeScript build, Go build, and scanner binary build output.

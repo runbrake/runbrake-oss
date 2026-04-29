@@ -24,12 +24,22 @@ type openClawConfig struct {
 	AgentID         string        `json:"agentId"`
 	Version         string        `json:"version"`
 	Gateway         gatewayConfig `json:"gateway"`
+	Agents          agentsConfig  `json:"agents"`
 	Tools           []string      `json:"tools"`
 	OAuthScopes     []string      `json:"oauthScopes"`
 	Logs            []string      `json:"logs"`
 	BackgroundTasks []string      `json:"backgroundTasks"`
 	StandingOrders  []string      `json:"standingOrders"`
 	MemoryFiles     []string      `json:"memoryFiles"`
+}
+
+type agentsConfig struct {
+	Defaults agentSkillConfig            `json:"defaults"`
+	Profiles map[string]agentSkillConfig `json:"profiles"`
+}
+
+type agentSkillConfig struct {
+	Skills []string `json:"skills"`
 }
 
 type gatewayConfig struct {
@@ -233,11 +243,142 @@ func Scan(options ScanOptions) (Result, error) {
 	}
 
 	addPersistenceFindings(&findings, add, options.Root, cfg)
+	addOpenClawSkillPostureFindings(add, options.Root, cfg)
+	addOpenClawPluginDiagnosticFindings(add, options.OpenClawDiagnostics)
 
 	sortFindings(findings)
 	result.Report.Findings = findings
 	result.Report.Summary = summarize(findings)
 	return result, nil
+}
+
+func addOpenClawPluginDiagnosticFindings(add func(string, Severity, float64, string, []string, string), diagnostics []OpenClawPluginDiagnostic) {
+	for _, diagnostic := range diagnostics {
+		extra := runtimeBeyondManifest(diagnostic.RuntimeTools, diagnostic.ManifestTools)
+		for _, hook := range diagnostic.RuntimeHooks {
+			extra = append(extra, "hook:"+hook)
+		}
+		for _, route := range diagnostic.RuntimeRoutes {
+			extra = append(extra, "route:"+route)
+		}
+		if len(extra) > 0 {
+			add("RB-PLUGIN-RUNTIME-MISMATCH", SeverityHigh, 0.88, "OpenClaw plugin runtime capabilities exceed manifest evidence", []string{fmt.Sprintf("plugin %s runtime evidence: %s", pluginDiagnosticName(diagnostic), strings.Join(sortedUnique(extra), ", "))}, "Review plugin inspect output and ensure runtime tools, hooks, and routes are declared and approved before use.")
+		}
+		if len(diagnostic.DoctorFindings) > 0 {
+			add("RB-PLUGIN-DOCTOR-WARNING", SeverityMedium, 0.86, "OpenClaw plugin doctor reported warnings", prefixEvidence("plugin "+pluginDiagnosticName(diagnostic)+": ", diagnostic.DoctorFindings), "Resolve OpenClaw plugin doctor warnings before trusting the plugin in production.")
+		}
+	}
+}
+
+func runtimeBeyondManifest(runtime []string, manifest []string) []string {
+	allowed := map[string]bool{}
+	for _, value := range manifest {
+		allowed[strings.TrimSpace(value)] = true
+	}
+	out := []string{}
+	for _, value := range runtime {
+		value = strings.TrimSpace(value)
+		if value != "" && !allowed[value] {
+			out = append(out, "tool:"+value)
+		}
+	}
+	return out
+}
+
+func pluginDiagnosticName(diagnostic OpenClawPluginDiagnostic) string {
+	if strings.TrimSpace(diagnostic.Name) != "" {
+		return diagnostic.Name
+	}
+	if strings.TrimSpace(diagnostic.ID) != "" {
+		return diagnostic.ID
+	}
+	return "unknown"
+}
+
+type skillLocation struct {
+	Name string
+	Path string
+	Base string
+}
+
+func addOpenClawSkillPostureFindings(add func(string, Severity, float64, string, []string, string), root string, cfg openClawConfig) {
+	locations := discoverSkillLocations(root)
+	byName := map[string][]skillLocation{}
+	for _, location := range locations {
+		byName[location.Name] = append(byName[location.Name], location)
+	}
+	for name, matches := range byName {
+		if len(matches) < 2 {
+			continue
+		}
+		evidence := []string{}
+		hasWorkspace := false
+		hasManaged := false
+		for _, match := range matches {
+			evidence = append(evidence, fmt.Sprintf("%s at %s", name, match.Path))
+			if match.Base == "skills" || match.Base == ".agents/skills" {
+				hasWorkspace = true
+			}
+			if match.Base == ".openclaw/skills" {
+				hasManaged = true
+			}
+		}
+		add("RB-SKILL-PRECEDENCE-SHADOW", SeverityMedium, 0.86, "OpenClaw skill name appears in multiple precedence locations", evidence, "Remove duplicate skill names or pin the intended higher-precedence skill explicitly.")
+		if hasWorkspace && hasManaged {
+			add("RB-SKILL-WORKSPACE-OVERRIDE", SeverityMedium, 0.84, "Workspace skill overrides a managed OpenClaw skill", evidence, "Review the workspace override before running agents and move trusted skills into an approved location.")
+		}
+	}
+
+	if len(cfg.Agents.Defaults.Skills) == 0 {
+		add("RB-AGENT-SKILL-ALLOWLIST-MISSING", SeverityMedium, 0.82, "OpenClaw agent default skill allowlist is missing", []string{"agents.defaults.skills is empty or missing"}, "Set an explicit least-privilege skill allowlist for agent defaults.")
+		return
+	}
+	for _, skill := range cfg.Agents.Defaults.Skills {
+		if strings.TrimSpace(skill) == "*" {
+			add("RB-AGENT-SKILL-WILDCARD", SeverityMedium, 0.84, "OpenClaw agent default skill allowlist is wildcarded", []string{"agents.defaults.skills contains *"}, "Replace wildcard skill access with explicit reviewed skill names.")
+			return
+		}
+	}
+}
+
+func discoverSkillLocations(root string) []skillLocation {
+	bases := []string{"skills", ".openclaw/skills", ".agents/skills"}
+	locations := []skillLocation{}
+	for _, base := range bases {
+		abs := filepath.Join(root, filepath.FromSlash(base))
+		if _, err := os.Stat(abs); errorsIsNotExist(err) {
+			continue
+		}
+		_ = filepath.WalkDir(abs, func(path string, entry fs.DirEntry, err error) error {
+			if err != nil || !entry.IsDir() {
+				return nil
+			}
+			manifestPath := filepath.Join(path, "skill.json")
+			raw, err := os.ReadFile(manifestPath)
+			if err != nil {
+				return nil
+			}
+			var manifest artifactManifest
+			if err := json.Unmarshal(raw, &manifest); err != nil {
+				return nil
+			}
+			name := strings.TrimSpace(manifest.Name)
+			if name == "" {
+				name = filepath.Base(path)
+			}
+			rel, err := filepath.Rel(root, path)
+			if err != nil {
+				rel = path
+			}
+			locations = append(locations, skillLocation{
+				Name: name,
+				Path: filepath.ToSlash(rel),
+				Base: base,
+			})
+			return filepath.SkipDir
+		})
+	}
+	return locations
 }
 
 func discoverArtifacts(root string, dir string, manifestName string, kind string) ([]Artifact, error) {

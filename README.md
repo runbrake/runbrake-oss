@@ -25,24 +25,11 @@ This is static defensive analysis. A finding means "needs review before trust," 
 
 ## Quick Start
 
-Install the published binary with Homebrew:
-
-```bash
-brew install runbrake/tap/runbrake
-runbrake
-```
-
-Or build from source:
-
 ```bash
 pnpm install
 pnpm run ci:check
 go build -o .cache/bin/runbrake ./cmd/runbrake
-```
 
-Then scan an OpenClaw install or skill:
-
-```bash
 runbrake doctor --path ~/.openclaw
 runbrake scan-skill ./skills/my-skill
 runbrake assess --path ~/.openclaw
@@ -63,6 +50,7 @@ runbrake doctor --path ~/.openclaw
 runbrake export-report --format markdown --path ~/.openclaw
 runbrake scan-skill ./skills/my-skill
 runbrake scan-skills ./skills
+runbrake scan-skill --dependency-scan --vuln osv --cache-dir .cache/runbrake/enrichment ./skills/my-skill
 runbrake assess --path ~/.openclaw --format markdown --output runbrake-assessment.md
 runbrake watch-openclaw --once --path ~/.openclaw
 runbrake scan-registry openclaw --source github --limit 100 --format summary
@@ -71,16 +59,22 @@ runbrake diff-scan-report --baseline previous.json --current current.json
 
 Reports are available as console, Markdown, JSON, and SARIF depending on the command.
 
+Local skill scans can use the same dependency and OSV enrichment path as registry scans. `--dependency-scan --vuln osv` extracts supported dependency manifests and lockfiles, emits `RB-SKILL-VULNERABLE-DEPENDENCY`, and includes optional `dependencies` and `vulnerabilities` arrays in JSON output. Supported sources include `package-lock.json`, `package.json` exact versions, `pnpm-lock.yaml`, `yarn.lock`, `requirements.txt`, `poetry.lock`, `uv.lock`, `Pipfile.lock`, `go.mod`, `go.sum`, and `Cargo.lock`.
+
+`doctor --openclaw-bin /path/to/openclaw` can import OpenClaw plugin diagnostics from `plugins list --json`, `plugins inspect <id> --json`, and `plugins doctor --json`. RunBrake flags runtime tools, hooks, or routes that exceed manifest claims, plugin doctor warnings, risky skill precedence, and missing or wildcarded agent skill allowlists.
+
 ## Rule IDs
 
 RunBrake emits stable `RB-*` rule IDs. Examples:
 
-| Rule ID                            | Severity | Meaning                                                    |
-| ---------------------------------- | -------- | ---------------------------------------------------------- |
-| `RB-SKILL-REMOTE-SCRIPT-EXECUTION` | Critical | Skill downloads a remote script and pipes it to a shell.   |
-| `RB-SKILL-SHELL-EXECUTION`         | High     | Skill can execute shell commands or documents shell usage. |
-| `RB-SKILL-PLAINTEXT-SECRET`        | High     | Skill package contains secret-looking material.            |
-| `RB-SKILL-UNKNOWN-EGRESS`          | Medium   | Skill references domains outside the local allowlist.      |
+| Rule ID                            | Severity | Meaning                                                     |
+| ---------------------------------- | -------- | ----------------------------------------------------------- |
+| `RB-SKILL-REMOTE-SCRIPT-EXECUTION` | Critical | Skill downloads a remote script and pipes it to a shell.    |
+| `RB-SKILL-SHELL-EXECUTION`         | High     | Skill can execute shell commands or documents shell usage.  |
+| `RB-SKILL-PLAINTEXT-SECRET`        | High     | Skill package contains secret-looking material.             |
+| `RB-SKILL-UNKNOWN-EGRESS`          | Medium   | Skill references domains outside the local allowlist.       |
+| `RB-SKILL-CONSTRUCTED-EGRESS`      | Medium   | Skill dynamically assembles or decodes egress destinations. |
+| `RB-SKILL-VULNERABLE-DEPENDENCY`   | High     | Dependency coordinates match OSV advisory data.             |
 
 See [Skill Risk Rules](docs/security/skill-risk-rules.md) for the full rule table.
 
@@ -101,10 +95,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: runbrake/runbrake-oss/.github/actions/runbrake-skill-scan@v0.1.0
+      - uses: runbrake/runbrake-oss/.github/actions/runbrake-skill-scan@v0.1.1
         with:
           path: .
-          version: v0.1.0
+          version: v0.1.1
           upload-sarif: "true"
 ```
 
@@ -118,7 +112,7 @@ RunBrake OSS is local-first:
 - Secret-looking evidence is redacted before console, Markdown, JSON, or SARIF rendering.
 - Remote package scans are bounded by size, file-count, timeout, and archive-expansion limits.
 - Static registry scans do not execute public skills or contact third-party services referenced by skills.
-- The OpenClaw policy-plugin adapter uses metadata-first event shapes and redacted argument summaries.
+- The OpenClaw policy-plugin adapter uses metadata-first event shapes, redacted argument summaries, and optional runtime-observation posts to a local RunBrake sidecar endpoint.
 
 See [Privacy Model](docs/security/privacy-model.md) and [Threat Model](docs/security/threat-model.md).
 
@@ -145,13 +139,6 @@ The split is intentional: this repo should be inspectable and useful on its own,
 pnpm install
 pnpm run ci:check
 ```
-
-## Documentation
-
-- [Changelog](CHANGELOG.md)
-- [Roadmap](ROADMAP.md)
-- [v0.1.0 release note](docs/releases/v0.1.0.md)
-- [Release verification](docs/security/release-integrity.md)
 
 ## Security
 

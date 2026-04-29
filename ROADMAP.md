@@ -2,6 +2,7 @@
 
 ## OSS Scanner
 
+- v0.1.1 shipped runtime-observation contracts, constructed-egress detection, local OSV parity, OpenClaw skill precedence checks, and plugin diagnostics import.
 - Improve parser coverage for real OpenClaw skill and plugin formats.
 - Reduce false positives in unknown-egress findings through clearer allowlist profiles.
 - Add more fixture coverage for malformed manifests and dependency ecosystems.

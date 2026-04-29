@@ -51,6 +51,9 @@ Controls:
 - Hash relevant manifest and source files.
 - Emit stable `RB-*` rule IDs with severity, confidence, evidence, and remediation.
 - Support domain allowlists, audit-mode egress tuning, and reasoned suppressions.
+- Detect dynamically constructed or decoded egress destinations as review evidence.
+- Extract exact dependency coordinates from npm, PyPI, Go, and Cargo manifests and lockfiles, including `pnpm-lock.yaml`, `yarn.lock`, `poetry.lock`, `uv.lock`, `Pipfile.lock`, and `go.sum`.
+- Match local dependency coordinates against OSV advisory data when `--dependency-scan --vuln osv` is enabled. Advisory matches are dependency risk evidence, not malware verdicts.
 
 ## Public Registry Scanner
 
@@ -72,10 +75,22 @@ Risk: the OpenClaw policy-plugin adapter could leak raw prompts, tool arguments,
 Controls:
 
 - Convert hooks into metadata-first `ToolCallEvent` and `InstallEvent` records.
+- Post optional metadata-only `RuntimeObservation` records before policy decisions when paired with a local RunBrake sidecar.
 - Redact and truncate argument summaries.
 - Reject raw payload fields in shared contract tests.
 - Fail open locally when the sidecar is unavailable instead of uploading fallback data.
 - Treat local sidecar policy enforcement as an explicit operator-controlled local runtime surface.
+
+## OpenClaw Native Posture Checks
+
+Risk: OpenClaw skill precedence and plugin runtime behavior can differ from what an operator expects. Workspace skills can override shared skills, missing or wildcard agent skill allowlists can widen skill access, and plugin runtime hooks, routes, or tools can exceed static manifest claims.
+
+Controls:
+
+- Follow OpenClaw's documented skill precedence: workspace skills outrank project-agent, personal, managed, bundled, and extra-directory skills.
+- Flag duplicate skill names, high-precedence workspace overrides, missing agent default skill allowlists, and wildcard skill access.
+- Import bounded JSON diagnostics from `openclaw plugins list --json`, `openclaw plugins inspect <id> --json`, and `openclaw plugins doctor --json` when an operator passes `--openclaw-bin`.
+- Treat imported plugin diagnostics as evidence for review and report routing, not as proof that a plugin is malicious.
 
 ## GitHub Action And SARIF
 

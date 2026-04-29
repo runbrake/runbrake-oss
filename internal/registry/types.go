@@ -22,6 +22,7 @@ type RegistrySourceType string
 const (
 	SourceGitHub  RegistrySourceType = "github"
 	SourceClawHub RegistrySourceType = "clawhub"
+	SourceLocal   RegistrySourceType = "local"
 )
 
 type ScanOptions struct {

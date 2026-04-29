@@ -130,6 +130,67 @@ func TestScanRedactsSecretFixtureValues(t *testing.T) {
 	}
 }
 
+func TestScanDetectsOpenClawSkillPrecedenceAndAllowlistPosture(t *testing.T) {
+	root := t.TempDir()
+	config := `{
+  "agentId": "agent-local",
+  "version": "1.4.2",
+  "gateway": {"bindHost":"127.0.0.1","port":47837,"auth":"token","authEnabled":true},
+  "agents": {
+    "defaults": {"skills": ["*"]}
+  }
+}`
+	if err := os.WriteFile(filepath.Join(root, "openclaw.json"), []byte(config), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	writeSkillManifest(t, filepath.Join(root, ".openclaw", "skills", "email"), "email-helper")
+	writeSkillManifest(t, filepath.Join(root, "skills", "email"), "email-helper")
+
+	result, err := Scan(ScanOptions{
+		Root:           root,
+		Now:            fixedScanTime,
+		ScannerVersion: "test",
+	})
+	if err != nil {
+		t.Fatalf("Scan(precedence) error = %v", err)
+	}
+
+	got := findingRuleIDs(result.Report.Findings)
+	for _, want := range []string{
+		"RB-SKILL-PRECEDENCE-SHADOW",
+		"RB-SKILL-WORKSPACE-OVERRIDE",
+		"RB-AGENT-SKILL-WILDCARD",
+	} {
+		if !slices.Contains(got, want) {
+			t.Fatalf("rule IDs = %v, missing %s; findings=%+v", got, want, result.Report.Findings)
+		}
+	}
+}
+
+func TestScanDetectsMissingAgentSkillAllowlist(t *testing.T) {
+	root := t.TempDir()
+	config := `{
+  "agentId": "agent-local",
+  "version": "1.4.2",
+  "gateway": {"bindHost":"127.0.0.1","port":47837,"auth":"token","authEnabled":true}
+}`
+	if err := os.WriteFile(filepath.Join(root, "openclaw.json"), []byte(config), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	result, err := Scan(ScanOptions{
+		Root:           root,
+		Now:            fixedScanTime,
+		ScannerVersion: "test",
+	})
+	if err != nil {
+		t.Fatalf("Scan(missing allowlist) error = %v", err)
+	}
+	if !slices.Contains(findingRuleIDs(result.Report.Findings), "RB-AGENT-SKILL-ALLOWLIST-MISSING") {
+		t.Fatalf("missing allowlist finding not emitted: %+v", result.Report.Findings)
+	}
+}
+
 func TestDiscoverRootUsesExplicitEnvAndDefaults(t *testing.T) {
 	explicit := fixturePath("safe-local")
 	root, err := DiscoverRoot(DiscoverOptions{
@@ -231,6 +292,17 @@ func copyDir(t *testing.T, src string, dst string) {
 		return os.WriteFile(target, data, 0o644)
 	}); err != nil {
 		t.Fatalf("copy fixture %s: %v", src, err)
+	}
+}
+
+func writeSkillManifest(t *testing.T, dir string, name string) {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir skill %s: %v", dir, err)
+	}
+	body := `{"name":"` + name + `","version":"1.0.0"}`
+	if err := os.WriteFile(filepath.Join(dir, "skill.json"), []byte(body), 0o644); err != nil {
+		t.Fatalf("write skill manifest: %v", err)
 	}
 }
 

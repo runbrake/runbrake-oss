@@ -9,6 +9,11 @@
     "allowRemote": false,
     "allowedOrigins": ["http://127.0.0.1:47838"]
   },
+  "agents": {
+    "defaults": {
+      "skills": ["calendar-assistant"]
+    }
+  },
   "tools": ["calendar_read"],
   "oauthScopes": ["openid", "profile"],
   "logs": ["logs/openclaw.log"]

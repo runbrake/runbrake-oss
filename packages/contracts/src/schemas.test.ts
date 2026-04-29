@@ -119,3 +119,49 @@ test("install event schema allows metadata and rejects raw package payloads", ()
   assert.equal(rejected, false);
   assert.match(ajv.errorsText(validate.errors), /additional properties/);
 });
+
+test("runtime observation schema allows metadata and rejects raw payload fields", () => {
+  const ajv = new Ajv2020({ allErrors: true, strict: true });
+  const validate = ajv.compile(contractSchemas.RuntimeObservation);
+
+  const valid = validate({
+    id: "runtime-001",
+    source: "openclaw.before_tool_call",
+    agentId: "agent-local-dev",
+    userId: "user-dev",
+    skill: "gmail-helper",
+    tool: "gmail.send",
+    phase: "before",
+    observedAt: "2026-04-29T00:00:01Z",
+    destinationDomains: ["gmail.googleapis.com"],
+    payloadClassifications: ["customer_email"],
+    argumentKeys: ["authorization", "recipient"],
+    argumentEvidence: {
+      authorization: "[REDACTED:oauth_token:11111111]",
+      recipient: "finance@example.com",
+    },
+  });
+
+  assert.equal(
+    valid,
+    true,
+    `RuntimeObservation metadata failed validation: ${ajv.errorsText(validate.errors)}`,
+  );
+
+  const rejected = validate({
+    id: "runtime-raw",
+    source: "openclaw.before_tool_call",
+    agentId: "agent-local-dev",
+    tool: "shell.exec",
+    phase: "before",
+    observedAt: "2026-04-29T00:00:01Z",
+    destinationDomains: [],
+    payloadClassifications: [],
+    argumentKeys: ["token"],
+    argumentEvidence: {},
+    rawPayload: "Bearer ya29.supersecrettokenvalue",
+  });
+
+  assert.equal(rejected, false);
+  assert.match(ajv.errorsText(validate.errors), /additional properties/);
+});

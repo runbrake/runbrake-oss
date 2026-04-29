@@ -31,13 +31,41 @@ type Summary struct {
 }
 
 type ScanReport struct {
-	ID             string    `json:"id"`
-	AgentID        string    `json:"agentId"`
-	ScannerVersion string    `json:"scannerVersion"`
-	GeneratedAt    string    `json:"generatedAt"`
-	Summary        Summary   `json:"summary"`
-	Findings       []Finding `json:"findings"`
-	ArtifactHashes []string  `json:"artifactHashes"`
+	ID              string          `json:"id"`
+	AgentID         string          `json:"agentId"`
+	ScannerVersion  string          `json:"scannerVersion"`
+	GeneratedAt     string          `json:"generatedAt"`
+	Summary         Summary         `json:"summary"`
+	Findings        []Finding       `json:"findings"`
+	ArtifactHashes  []string        `json:"artifactHashes"`
+	Dependencies    []Dependency    `json:"dependencies,omitempty"`
+	Vulnerabilities []Vulnerability `json:"vulnerabilities,omitempty"`
+}
+
+type Dependency struct {
+	Ecosystem    string `json:"ecosystem"`
+	Name         string `json:"name"`
+	Version      string `json:"version,omitempty"`
+	ManifestPath string `json:"manifestPath,omitempty"`
+	Source       string `json:"source,omitempty"`
+	Direct       bool   `json:"direct,omitempty"`
+	Dev          bool   `json:"dev,omitempty"`
+}
+
+type Vulnerability struct {
+	ID             string   `json:"id"`
+	Aliases        []string `json:"aliases,omitempty"`
+	Ecosystem      string   `json:"ecosystem"`
+	PackageName    string   `json:"packageName"`
+	PackageVersion string   `json:"packageVersion,omitempty"`
+	Severity       string   `json:"severity,omitempty"`
+	SeverityType   string   `json:"severityType,omitempty"`
+	SeverityScore  string   `json:"severityScore,omitempty"`
+	Summary        string   `json:"summary,omitempty"`
+	Published      string   `json:"published,omitempty"`
+	Modified       string   `json:"modified,omitempty"`
+	FixedVersions  []string `json:"fixedVersions,omitempty"`
+	References     []string `json:"references,omitempty"`
 }
 
 type Artifact struct {
@@ -67,9 +95,20 @@ type Result struct {
 }
 
 type ScanOptions struct {
-	Root           string
-	Now            time.Time
-	ScannerVersion string
+	Root                string
+	Now                 time.Time
+	ScannerVersion      string
+	OpenClawDiagnostics []OpenClawPluginDiagnostic
+}
+
+type OpenClawPluginDiagnostic struct {
+	ID             string
+	Name           string
+	ManifestTools  []string
+	RuntimeTools   []string
+	RuntimeHooks   []string
+	RuntimeRoutes  []string
+	DoctorFindings []string
 }
 
 type DiscoverOptions struct {

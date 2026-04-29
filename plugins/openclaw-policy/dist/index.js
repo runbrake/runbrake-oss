@@ -8,6 +8,16 @@ const secretPatterns = [
     },
     { kind: "oauth_token", pattern: /Bearer\s+[A-Za-z0-9._~+/=-]{16,}/g },
     { kind: "api_key", pattern: /sk-[A-Za-z0-9_-]{16,}/g },
+    { kind: "aws_access_key", pattern: /\bA(KIA|SIA)[A-Z0-9]{16}\b/g },
+    { kind: "slack_token", pattern: /\bxox[baprs]-[A-Za-z0-9-]{20,}\b/g },
+    { kind: "stripe_key", pattern: /\b[rs]k_(live|test)_[A-Za-z0-9]{16,}\b/g },
+    { kind: "github_token", pattern: /\bgithub_pat_[A-Za-z0-9_]{20,}\b/g },
+    { kind: "npm_token", pattern: /\bnpm_[A-Za-z0-9]{20,}\b/g },
+    { kind: "pypi_token", pattern: /\bpypi-[A-Za-z0-9_-]{32,}\b/g },
+    {
+        kind: "jwt",
+        pattern: /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{16,}\b/g,
+    },
     { kind: "oauth_token", pattern: /ya29\.[A-Za-z0-9._-]{16,}/g },
     { kind: "oauth_token", pattern: /ghp_[A-Za-z0-9_]{16,}/g },
     {
@@ -83,6 +93,35 @@ export function toInstallEvent(input, options = {}) {
     }
     return event;
 }
+export function toRuntimeObservation(input, options = {}) {
+    const observedAt = input.observedAt ?? (options.now ?? new Date()).toISOString();
+    const argumentEvidence = summarizeArguments(input.arguments ?? {}, options.maxArgumentLength ?? DEFAULT_ARGUMENT_LENGTH);
+    const argumentKeys = Object.keys(argumentEvidence).sort();
+    const observation = {
+        id: input.id ??
+            stableEventId([
+                "runtime",
+                input.agentId,
+                input.skill ?? "",
+                input.tool,
+                observedAt,
+            ]),
+        source: input.source ?? "openclaw.before_tool_call",
+        agentId: input.agentId,
+        tool: input.tool,
+        phase: input.phase ?? "before",
+        observedAt,
+        destinationDomains: [...(input.destinationDomains ?? [])],
+        payloadClassifications: [...(input.payloadClassifications ?? [])],
+        argumentKeys,
+        argumentEvidence,
+    };
+    assignIfPresent(observation, "organizationId", input.organizationId);
+    assignIfPresent(observation, "userId", input.userId);
+    assignIfPresent(observation, "skill", input.skill);
+    assignIfPresent(observation, "environment", input.environment);
+    return observation;
+}
 export async function requestPolicyDecision(event, options = {}) {
     const fetchImpl = options.fetchImpl ?? globalThis.fetch;
     const decidedAt = (options.now ?? new Date()).toISOString();
@@ -133,6 +172,27 @@ export async function requestInstallDecision(event, options = {}) {
         return failOpenInstallDecision(event, decidedAt, `sidecar unavailable: ${error instanceof Error ? error.message : String(error)}`);
     }
 }
+export async function requestRuntimeObservation(observation, options = {}) {
+    const fetchImpl = options.fetchImpl ?? globalThis.fetch;
+    if (!fetchImpl) {
+        return undefined;
+    }
+    try {
+        const response = await fetchImpl(`${options.sidecarUrl ?? DEFAULT_SIDECAR_URL}/v1/runtime/observation`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(observation),
+        });
+        if (!response.ok) {
+            await response.text();
+            return undefined;
+        }
+        return (await response.json());
+    }
+    catch {
+        return undefined;
+    }
+}
 export function decisionToBeforeToolCallResult(decision) {
     if (decision.action !== "deny" &&
         decision.action !== "quarantine" &&
@@ -172,6 +232,22 @@ export function createBeforeToolCallHandler(options = {}) {
             payloadClassifications: options.payloadClassifications ?? [],
             destinationDomains: options.destinationDomains ?? [],
         }, options);
+        if (options.recordRuntimeObservations !== false) {
+            await requestRuntimeObservation(toRuntimeObservation({
+                id: toolCallEvent.id,
+                organizationId: toolCallEvent.organizationId,
+                agentId: toolCallEvent.agentId,
+                userId: toolCallEvent.userId,
+                skill: toolCallEvent.skill,
+                tool: toolCallEvent.tool,
+                phase: toolCallEvent.phase,
+                observedAt: toolCallEvent.observedAt,
+                environment: toolCallEvent.environment,
+                arguments: event.params ?? {},
+                payloadClassifications: toolCallEvent.payloadClassifications,
+                destinationDomains: toolCallEvent.destinationDomains,
+            }, options), options);
+        }
         const response = await requestPolicyDecision(toolCallEvent, options);
         return decisionToBeforeToolCallResult(response.decision);
     };

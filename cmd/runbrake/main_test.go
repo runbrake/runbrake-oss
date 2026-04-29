@@ -41,6 +41,64 @@ func TestDoctorCommandScansExplicitPath(t *testing.T) {
 	}
 }
 
+func TestDoctorCommandImportsOpenClawPluginDiagnostics(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "openclaw.json"), []byte(`{
+  "agentId": "agent-local",
+  "version": "1.4.2",
+  "gateway": {"bindHost":"127.0.0.1","port":47837,"auth":"token","authEnabled":true},
+  "agents": {"defaults": {"skills": ["safe-skill"]}}
+}`), 0o600); err != nil {
+		t.Fatalf("write openclaw config: %v", err)
+	}
+	fake := filepath.Join(t.TempDir(), "openclaw")
+	script := `#!/bin/sh
+case "$*" in
+  "plugins list --json")
+    printf '{"plugins":[{"id":"runbrake-policy","name":"RunBrake Policy"}]}'
+    ;;
+  "plugins inspect runbrake-policy --json")
+    printf '{"id":"runbrake-policy","name":"RunBrake Policy","manifest":{"tools":["safe.read"]},"runtime":{"tools":["safe.read","shell.exec"],"hooks":["before_tool_call"],"routes":["/admin"]}}'
+    ;;
+  "plugins doctor --json")
+    printf '{"findings":[{"pluginId":"runbrake-policy","severity":"warn","message":"runtime hook registered outside manifest"}]}'
+    ;;
+  *)
+    echo "unexpected args: $*" >&2
+    exit 2
+    ;;
+esac
+`
+	if err := os.WriteFile(fake, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake openclaw: %v", err)
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run(
+		[]string{"doctor", "--path", root, "--openclaw-bin", fake, "--format", "json"},
+		&stdout,
+		&stderr,
+		map[string]string{},
+		t.TempDir(),
+		fixedNow,
+	)
+	if code != 1 {
+		t.Fatalf("exit code = %d, want 1 for plugin diagnostics; stderr=%s", code, stderr.String())
+	}
+	output := stdout.String()
+	for _, want := range []string{
+		`"ruleId": "RB-PLUGIN-RUNTIME-MISMATCH"`,
+		`"ruleId": "RB-PLUGIN-DOCTOR-WARNING"`,
+		`shell.exec`,
+		`runtime hook registered outside manifest`,
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("doctor JSON missing %q:\n%s", want, output)
+		}
+	}
+}
+
 func TestScannerCLIRejectsCommercialSidecarCommand(t *testing.T) {
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
@@ -97,6 +155,77 @@ func TestExportReportFormats(t *testing.T) {
 				t.Fatalf("%s export missing %q:\n%s", tt.format, tt.want, stdout.String())
 			}
 		})
+	}
+}
+
+func TestScanSkillLocalOSVEnrichmentFlags(t *testing.T) {
+	osvServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/querybatch":
+			writeTestJSON(t, w, map[string]any{
+				"results": []map[string]any{
+					{"vulns": []map[string]any{{"id": "GHSA-test-lodash"}}},
+				},
+			})
+		case "/v1/vulns/GHSA-test-lodash":
+			writeTestJSON(t, w, map[string]any{
+				"id":      "GHSA-test-lodash",
+				"summary": "Prototype pollution in lodash",
+				"severity": []map[string]string{{
+					"type":  "CVSS_V3",
+					"score": "9.8",
+				}},
+			})
+		default:
+			t.Fatalf("unexpected OSV request %s", r.URL.Path)
+		}
+	}))
+	defer osvServer.Close()
+
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "skill.json"), []byte(`{"name":"local-vulnerable","version":"1.0.0"}`), 0o644); err != nil {
+		t.Fatalf("write skill.json: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "package-lock.json"), []byte(`{
+  "packages": {
+    "": {"dependencies": {"lodash": "4.17.20"}},
+    "node_modules/lodash": {"version": "4.17.20"}
+  }
+}`), 0o644); err != nil {
+		t.Fatalf("write package-lock.json: %v", err)
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run(
+		[]string{
+			"scan-skill",
+			"--dependency-scan",
+			"--vuln", "osv",
+			"--osv-api-base", osvServer.URL,
+			"--format", "json",
+			root,
+		},
+		&stdout,
+		&stderr,
+		map[string]string{},
+		t.TempDir(),
+		fixedNow,
+	)
+	if code != 1 {
+		t.Fatalf("exit code = %d, want 1 for vulnerable dependency; stderr=%s", code, stderr.String())
+	}
+	output := stdout.String()
+	for _, want := range []string{
+		`"ruleId": "RB-SKILL-VULNERABLE-DEPENDENCY"`,
+		`"dependencies": [`,
+		`"vulnerabilities": [`,
+		`"id": "GHSA-test-lodash"`,
+		`"packageName": "lodash"`,
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("local scan enriched JSON missing %q:\n%s", want, output)
+		}
 	}
 }
 

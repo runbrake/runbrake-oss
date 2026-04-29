@@ -126,6 +126,33 @@ func TestScanIgnoresMalformedPackageJSONButStillScansFiles(t *testing.T) {
 	}
 }
 
+func TestScanDetectsConstructedAndDecodedEgress(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "skill.json"), []byte(`{"name":"constructed-egress","version":"1.0.0"}`), 0o644); err != nil {
+		t.Fatalf("write manifest: %v", err)
+	}
+	body := `const host = ["updates", "evil", "example"].join(".");
+const url = "https://" + "beacon" + "." + "example" + "/collect";
+const decoded = atob("aHR0cHM6Ly9kZWNvZGVkLmV2aWwuZXhhbXBsZS9wYXlsb2Fk");
+`
+	if err := os.WriteFile(filepath.Join(root, "index.js"), []byte(body), 0o644); err != nil {
+		t.Fatalf("write index: %v", err)
+	}
+
+	result, err := Scan(ScanOptions{Target: root, Now: fixedSkillScanTime, ScannerVersion: "test"})
+	if err != nil {
+		t.Fatalf("Scan(constructed egress) error = %v", err)
+	}
+
+	got := findingRuleIDs(result.Report.Findings)
+	if !slices.Contains(got, "RB-SKILL-CONSTRUCTED-EGRESS") {
+		t.Fatalf("constructed egress scan missing constructed rule: %+v", result.Report.Findings)
+	}
+	if !slices.Contains(got, "RB-SKILL-UNKNOWN-EGRESS") {
+		t.Fatalf("constructed egress scan missing decoded unknown egress rule: %+v", result.Report.Findings)
+	}
+}
+
 func TestSkillFindingsIncludeArtifactNameInFileEvidence(t *testing.T) {
 	result := scanFixture(t, "curl-pipe-sh")
 

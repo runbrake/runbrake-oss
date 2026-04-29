@@ -13,6 +13,8 @@ const (
 	RuleBase64Decode          = "RB-SKILL-BASE64-DECODE"
 	RuleRemoteScriptExecution = "RB-SKILL-REMOTE-SCRIPT-EXECUTION"
 	RuleUnknownEgress         = "RB-SKILL-UNKNOWN-EGRESS"
+	RuleConstructedEgress     = "RB-SKILL-CONSTRUCTED-EGRESS"
+	RuleVulnerableDependency  = "RB-SKILL-VULNERABLE-DEPENDENCY"
 	RuleSimilarNamePackage    = "RB-SKILL-SIMILAR-NAME-PACKAGE"
 	RulePlaintextSecret       = "RB-SKILL-PLAINTEXT-SECRET"
 )
@@ -106,6 +108,22 @@ func RuleRegistry() []Rule {
 			Title:             "Skill references unknown network egress domains",
 			Remediation:       "Replace unknown domains with reviewed allowlisted endpoints or require approval before outbound network access.",
 			RecommendedPolicy: "approval required for network egress",
+		},
+		{
+			ID:                RuleConstructedEgress,
+			Severity:          doctor.SeverityMedium,
+			Confidence:        0.82,
+			Title:             "Skill constructs network egress destinations dynamically",
+			Remediation:       "Replace dynamically assembled network destinations with documented, reviewable allowlisted domains.",
+			RecommendedPolicy: "approval required for network egress",
+		},
+		{
+			ID:                RuleVulnerableDependency,
+			Severity:          doctor.SeverityHigh,
+			Confidence:        0.92,
+			Title:             "Skill depends on a package with known vulnerabilities",
+			Remediation:       "Upgrade the vulnerable dependency to a fixed version or remove it before installation.",
+			RecommendedPolicy: "quarantine",
 		},
 		{
 			ID:                RuleSimilarNamePackage,

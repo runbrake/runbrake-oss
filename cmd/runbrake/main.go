@@ -2,11 +2,15 @@ package main
 
 import (
 	"compress/gzip"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -553,6 +557,10 @@ func runSkillScan(args []string, stdout io.Writer, stderr io.Writer, now time.Ti
 	maxExtractedBytes := flags.Int64("max-extracted-bytes", 50<<20, "maximum extracted remote ZIP bytes")
 	maxRelevantFileBytes := flags.Int64("max-file-bytes", 5<<20, "maximum relevant file bytes read by skill scanner")
 	maxArchiveFiles := flags.Int("max-archive-files", 2048, "maximum files extracted from a remote ZIP")
+	dependencyScan := flags.Bool("dependency-scan", false, "extract dependency inventory from supported manifests and lockfiles")
+	vulnProvider := flags.String("vuln", "none", "vulnerability provider: none or osv")
+	osvAPIBase := flags.String("osv-api-base", registry.DefaultOSVAPIBase, "OSV API base URL")
+	cacheDir := flags.String("cache-dir", "", "cache directory for vulnerability enrichment")
 	if err := flags.Parse(args); err != nil {
 		return 2
 	}
@@ -594,6 +602,32 @@ func runSkillScan(args []string, stdout io.Writer, stderr io.Writer, now time.Ti
 		return 2
 	}
 
+	if *dependencyScan || strings.EqualFold(strings.TrimSpace(*vulnProvider), "osv") {
+		enriched, err := registry.ScanLocal(registry.ScanOptions{
+			Registry:              "local",
+			DependencyScan:        *dependencyScan,
+			VulnerabilityProvider: *vulnProvider,
+			OSVAPIBase:            *osvAPIBase,
+			CacheDir:              *cacheDir,
+			Now:                   now,
+			ScannerVersion:        version,
+			HTTPClient:            options.HTTPClient,
+			Timeout:               options.Timeout,
+			MaxDownloadBytes:      options.MaxDownloadBytes,
+			MaxExtractedBytes:     options.MaxExtractedBytes,
+			MaxRelevantFileBytes:  options.MaxRelevantFileBytes,
+			MaxArchiveFiles:       options.MaxArchiveFiles,
+			AllowDomains:          options.AllowDomains,
+			EgressProfile:         options.EgressProfile,
+			Suppressions:          options.Suppressions,
+		}, flags.Arg(0), many)
+		if err != nil {
+			fmt.Fprintf(stderr, "%s enrichment failed: %v\n", command, err)
+			return 2
+		}
+		applyLocalEnrichment(&result, enriched)
+	}
+
 	rendered, err := renderFormat(*format, result)
 	if err != nil {
 		fmt.Fprintf(stderr, "%v\n", err)
@@ -611,17 +645,131 @@ func runSkillScan(args []string, stdout io.Writer, stderr io.Writer, now time.Ti
 	return 0
 }
 
+func applyLocalEnrichment(result *skills.Result, enriched registry.RegistryScanReport) {
+	for _, skill := range enriched.Skills {
+		for _, dependency := range skill.Dependencies {
+			result.Report.Dependencies = append(result.Report.Dependencies, doctor.Dependency{
+				Ecosystem:    dependency.Ecosystem,
+				Name:         dependency.Name,
+				Version:      dependency.Version,
+				ManifestPath: dependency.ManifestPath,
+				Source:       dependency.Source,
+				Direct:       dependency.Direct,
+				Dev:          dependency.Dev,
+			})
+		}
+		for _, vulnerability := range skill.Vulnerabilities {
+			result.Report.Vulnerabilities = append(result.Report.Vulnerabilities, doctor.Vulnerability{
+				ID:             vulnerability.ID,
+				Aliases:        append([]string(nil), vulnerability.Aliases...),
+				Ecosystem:      vulnerability.Ecosystem,
+				PackageName:    vulnerability.PackageName,
+				PackageVersion: vulnerability.PackageVersion,
+				Severity:       vulnerability.Severity,
+				SeverityType:   vulnerability.SeverityType,
+				SeverityScore:  vulnerability.SeverityScore,
+				Summary:        vulnerability.Summary,
+				Published:      vulnerability.Published,
+				Modified:       vulnerability.Modified,
+				FixedVersions:  append([]string(nil), vulnerability.FixedVersions...),
+				References:     append([]string(nil), vulnerability.References...),
+			})
+			result.Report.Findings = append(result.Report.Findings, vulnerabilityFinding(skill, vulnerability))
+		}
+	}
+	result.Report.Summary = summarizeFindings(result.Report.Findings)
+}
+
+func vulnerabilityFinding(skill registry.RegistrySkillResult, vulnerability registry.RegistryVulnerability) doctor.Finding {
+	severity := vulnerabilitySeverity(vulnerability.Severity)
+	evidence := fmt.Sprintf("%s@%s %s affects %s/%s",
+		vulnerability.PackageName,
+		vulnerability.PackageVersion,
+		displayValue(vulnerability.ID),
+		displayValue(skill.Owner),
+		displayValue(skill.Slug),
+	)
+	if strings.TrimSpace(vulnerability.Summary) != "" {
+		evidence += ": " + vulnerability.Summary
+	}
+	return doctor.Finding{
+		ID:          "finding-" + shortTextHash(strings.Join([]string{skills.RuleVulnerableDependency, skill.Slug, vulnerability.ID, vulnerability.PackageName, vulnerability.PackageVersion}, "|")),
+		RuleID:      skills.RuleVulnerableDependency,
+		Severity:    severity,
+		Confidence:  0.92,
+		Title:       "Skill depends on a package with known vulnerabilities",
+		Evidence:    []string{evidence},
+		Remediation: "Recommended policy: quarantine. Upgrade the vulnerable dependency to a fixed version or remove it before installation.",
+	}
+}
+
+func vulnerabilitySeverity(label string) doctor.Severity {
+	switch strings.ToLower(strings.TrimSpace(label)) {
+	case "critical":
+		return doctor.SeverityCritical
+	case "high":
+		return doctor.SeverityHigh
+	case "medium", "moderate":
+		return doctor.SeverityMedium
+	case "low":
+		return doctor.SeverityLow
+	default:
+		return doctor.SeverityInfo
+	}
+}
+
+func summarizeFindings(findings []doctor.Finding) doctor.Summary {
+	var summary doctor.Summary
+	for _, finding := range findings {
+		switch finding.Severity {
+		case doctor.SeverityCritical:
+			summary.Critical++
+		case doctor.SeverityHigh:
+			summary.High++
+		case doctor.SeverityMedium:
+			summary.Medium++
+		case doctor.SeverityLow:
+			summary.Low++
+		default:
+			summary.Info++
+		}
+	}
+	return summary
+}
+
+func shortTextHash(value string) string {
+	sum := sha256.Sum256([]byte(value))
+	return hex.EncodeToString(sum[:])[:12]
+}
+
+func displayValue(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return "unknown"
+	}
+	return value
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
+}
+
 func runDoctor(args []string, stdout io.Writer, stderr io.Writer, env map[string]string, homeDir string, now time.Time) int {
 	flags := flag.NewFlagSet("doctor", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	path := flags.String("path", "", "OpenClaw install path")
+	openClawBin := flags.String("openclaw-bin", "", "optional OpenClaw binary for plugins list/inspect/doctor JSON diagnostics")
 	format := flags.String("format", "console", "report format: console, markdown, json, sarif")
 	output := flags.String("output", "", "write report to file")
 	if err := flags.Parse(args); err != nil {
 		return 2
 	}
 
-	result, err := scanInstall(*path, env, homeDir, now)
+	result, err := scanInstall(*path, env, homeDir, now, *openClawBin)
 	if err != nil {
 		fmt.Fprintf(stderr, "doctor failed: %v\n", err)
 		return 2
@@ -659,7 +807,7 @@ func runExportReport(args []string, stdout io.Writer, stderr io.Writer, env map[
 		return 2
 	}
 
-	result, err := scanInstall(*path, env, homeDir, now)
+	result, err := scanInstall(*path, env, homeDir, now, "")
 	if err != nil {
 		fmt.Fprintf(stderr, "export-report failed: %v\n", err)
 		return 2
@@ -678,7 +826,7 @@ func runExportReport(args []string, stdout io.Writer, stderr io.Writer, env map[
 	return 0
 }
 
-func scanInstall(path string, env map[string]string, homeDir string, now time.Time) (doctor.Result, error) {
+func scanInstall(path string, env map[string]string, homeDir string, now time.Time, openClawBin string) (doctor.Result, error) {
 	root, err := doctor.DiscoverRoot(doctor.DiscoverOptions{
 		ExplicitPath: path,
 		Env:          env,
@@ -687,12 +835,101 @@ func scanInstall(path string, env map[string]string, homeDir string, now time.Ti
 	if err != nil {
 		return doctor.Result{}, err
 	}
+	diagnostics, err := collectOpenClawDiagnostics(openClawBin)
+	if err != nil {
+		return doctor.Result{}, err
+	}
 
 	return doctor.Scan(doctor.ScanOptions{
-		Root:           root,
-		Now:            now,
-		ScannerVersion: version,
+		Root:                root,
+		Now:                 now,
+		ScannerVersion:      version,
+		OpenClawDiagnostics: diagnostics,
 	})
+}
+
+func collectOpenClawDiagnostics(openClawBin string) ([]doctor.OpenClawPluginDiagnostic, error) {
+	openClawBin = strings.TrimSpace(openClawBin)
+	if openClawBin == "" {
+		return nil, nil
+	}
+
+	var list struct {
+		Plugins []struct {
+			ID   string `json:"id"`
+			Name string `json:"name"`
+		} `json:"plugins"`
+	}
+	if err := runOpenClawJSON(openClawBin, &list, "plugins", "list", "--json"); err != nil {
+		return nil, fmt.Errorf("openclaw plugins list: %w", err)
+	}
+
+	diagnostics := []doctor.OpenClawPluginDiagnostic{}
+	for _, plugin := range list.Plugins {
+		if strings.TrimSpace(plugin.ID) == "" {
+			continue
+		}
+		var inspect struct {
+			ID       string `json:"id"`
+			Name     string `json:"name"`
+			Manifest struct {
+				Tools []string `json:"tools"`
+			} `json:"manifest"`
+			Runtime struct {
+				Tools  []string `json:"tools"`
+				Hooks  []string `json:"hooks"`
+				Routes []string `json:"routes"`
+			} `json:"runtime"`
+		}
+		if err := runOpenClawJSON(openClawBin, &inspect, "plugins", "inspect", plugin.ID, "--json"); err != nil {
+			return nil, fmt.Errorf("openclaw plugins inspect %s: %w", plugin.ID, err)
+		}
+		diagnostics = append(diagnostics, doctor.OpenClawPluginDiagnostic{
+			ID:            firstNonEmpty(inspect.ID, plugin.ID),
+			Name:          firstNonEmpty(inspect.Name, plugin.Name),
+			ManifestTools: inspect.Manifest.Tools,
+			RuntimeTools:  inspect.Runtime.Tools,
+			RuntimeHooks:  inspect.Runtime.Hooks,
+			RuntimeRoutes: inspect.Runtime.Routes,
+		})
+	}
+
+	var doctorOut struct {
+		Findings []struct {
+			PluginID string `json:"pluginId"`
+			Severity string `json:"severity"`
+			Message  string `json:"message"`
+		} `json:"findings"`
+	}
+	if err := runOpenClawJSON(openClawBin, &doctorOut, "plugins", "doctor", "--json"); err != nil {
+		return nil, fmt.Errorf("openclaw plugins doctor: %w", err)
+	}
+	for _, finding := range doctorOut.Findings {
+		message := strings.TrimSpace(strings.Join([]string{finding.Severity, finding.Message}, ": "))
+		for i := range diagnostics {
+			if diagnostics[i].ID == finding.PluginID || finding.PluginID == "" {
+				diagnostics[i].DoctorFindings = append(diagnostics[i].DoctorFindings, message)
+			}
+		}
+	}
+	return diagnostics, nil
+}
+
+func runOpenClawJSON(openClawBin string, out any, args ...string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, openClawBin, args...)
+	payload, err := cmd.Output()
+	if ctx.Err() == context.DeadlineExceeded {
+		return fmt.Errorf("command timed out")
+	}
+	if err != nil {
+		return err
+	}
+	if err := json.Unmarshal(payload, out); err != nil {
+		return fmt.Errorf("parse JSON: %w", err)
+	}
+	return nil
 }
 
 func renderFormat(format string, result doctor.Result) (string, error) {
@@ -1172,10 +1409,10 @@ func flattenRegistryScanReport(registryReport registry.RegistryScanReport) docto
 func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "Usage:")
 	fmt.Fprintln(w, "  runbrake assess [--path <openclaw-root>] [--format markdown|json] [--output <file>]")
-	fmt.Fprintln(w, "  runbrake doctor [--path <openclaw-root>] [--format console|markdown|json|sarif] [--output <file>]")
+	fmt.Fprintln(w, "  runbrake doctor [--path <openclaw-root>] [--openclaw-bin <path>] [--format console|markdown|json|sarif] [--output <file>]")
 	fmt.Fprintln(w, "  runbrake export-report --format markdown|json|sarif [--path <openclaw-root>] [--output <file>]")
-	fmt.Fprintln(w, "  runbrake scan-skill [--format console|markdown|json|sarif] [--allow-domain <domain>] [--egress-profile balanced|audit] [--suppressions <file>] [--output <file>] <skill-path-or-url>")
-	fmt.Fprintln(w, "  runbrake scan-skills [--format console|markdown|json|sarif] [--allow-domain <domain>] [--egress-profile balanced|audit] [--suppressions <file>] [--output <file>] <skills-directory>")
+	fmt.Fprintln(w, "  runbrake scan-skill [--format console|markdown|json|sarif] [--allow-domain <domain>] [--egress-profile balanced|audit] [--suppressions <file>] [--dependency-scan] [--vuln none|osv] [--cache-dir <dir>] [--output <file>] <skill-path-or-url>")
+	fmt.Fprintln(w, "  runbrake scan-skills [--format console|markdown|json|sarif] [--allow-domain <domain>] [--egress-profile balanced|audit] [--suppressions <file>] [--dependency-scan] [--vuln none|osv] [--cache-dir <dir>] [--output <file>] <skills-directory>")
 	fmt.Fprintln(w, "  runbrake watch-openclaw --once [--path <openclaw-root>] [--state <file>] [--format console|json]")
 	fmt.Fprintln(w, "  runbrake scan-registry openclaw [--source github|clawhub] [--limit <n>] [--workers <n>] [--dependency-scan] [--vuln none|osv] [--cache-dir <dir>] [--progress] [--fail-on none|low|medium|high|critical] [--slugs <slug,...>] [--format summary|json|sarif] [--output <file>] [--archive-dir <dir|none>]")
 	fmt.Fprintln(w, "  runbrake summarize-registry-report --input <registry-json> [--output <file>] [--top-skills <n>] [--examples <n>]")

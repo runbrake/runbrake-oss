@@ -10,6 +10,8 @@ import (
 )
 
 var exactPackageVersionPattern = regexp.MustCompile(`^[0-9]+(\.[0-9A-Za-z][0-9A-Za-z._-]*)?([+-][0-9A-Za-z._-]+)?$`)
+var pnpmPackagePattern = regexp.MustCompile(`^\s*/((?:@[^/]+/)?[^@\s]+)@([^:\s]+):\s*$`)
+var yarnKeyPattern = regexp.MustCompile(`^"?((?:@[^/@]+/)?[^@"\s]+)@.*"?\s*:\s*$`)
 
 func ExtractDependencies(root string) []RegistryDependency {
 	root = strings.TrimSpace(root)
@@ -39,12 +41,22 @@ func ExtractDependencies(root string) []RegistryDependency {
 		switch name {
 		case "package-lock.json":
 			dependencies = append(dependencies, parsePackageLockDependencies(data, rel)...)
+		case "pnpm-lock.yaml":
+			dependencies = append(dependencies, parsePnpmLockDependencies(data, rel)...)
+		case "yarn.lock":
+			dependencies = append(dependencies, parseYarnLockDependencies(data, rel)...)
 		case "package.json":
 			dependencies = append(dependencies, parsePackageJSONDependencies(data, rel)...)
 		case "requirements.txt":
 			dependencies = append(dependencies, parseRequirementsDependencies(data, rel)...)
+		case "poetry.lock", "uv.lock":
+			dependencies = append(dependencies, parsePythonTOMLLockDependencies(data, rel)...)
+		case "pipfile.lock":
+			dependencies = append(dependencies, parsePipfileLockDependencies(data, rel)...)
 		case "go.mod":
 			dependencies = append(dependencies, parseGoModDependencies(data, rel)...)
+		case "go.sum":
+			dependencies = append(dependencies, parseGoSumDependencies(data, rel)...)
 		case "cargo.lock":
 			dependencies = append(dependencies, parseCargoLockDependencies(data, rel)...)
 		}
@@ -142,6 +154,69 @@ func parsePackageLockDependencies(data []byte, manifestPath string) []RegistryDe
 	return out
 }
 
+func parsePnpmLockDependencies(data []byte, manifestPath string) []RegistryDependency {
+	out := []RegistryDependency{}
+	for _, line := range strings.Split(string(data), "\n") {
+		match := pnpmPackagePattern.FindStringSubmatch(strings.TrimSpace(line))
+		if len(match) != 3 {
+			continue
+		}
+		name := strings.TrimSpace(match[1])
+		version := cleanExactVersion(match[2])
+		if name == "" || version == "" {
+			continue
+		}
+		out = append(out, RegistryDependency{
+			Ecosystem:    "npm",
+			Name:         name,
+			Version:      version,
+			ManifestPath: manifestPath,
+			Source:       "pnpm-lock.yaml",
+		})
+	}
+	return out
+}
+
+func parseYarnLockDependencies(data []byte, manifestPath string) []RegistryDependency {
+	out := []RegistryDependency{}
+	currentNames := []string{}
+	for _, rawLine := range strings.Split(string(data), "\n") {
+		line := strings.TrimSpace(rawLine)
+		if line == "" {
+			currentNames = nil
+			continue
+		}
+		if !strings.HasPrefix(rawLine, " ") && strings.HasSuffix(line, ":") {
+			currentNames = nil
+			for _, key := range strings.Split(line, ",") {
+				key = strings.TrimSpace(strings.Trim(key, `"`))
+				match := yarnKeyPattern.FindStringSubmatch(key + ":")
+				if len(match) == 2 {
+					currentNames = append(currentNames, match[1])
+				}
+			}
+			continue
+		}
+		if len(currentNames) == 0 || !strings.HasPrefix(line, "version ") {
+			continue
+		}
+		version := cleanExactVersion(strings.TrimSpace(strings.TrimPrefix(line, "version ")))
+		if version == "" {
+			continue
+		}
+		for _, name := range currentNames {
+			out = append(out, RegistryDependency{
+				Ecosystem:    "npm",
+				Name:         name,
+				Version:      version,
+				ManifestPath: manifestPath,
+				Source:       "yarn.lock",
+			})
+		}
+	}
+	return out
+}
+
 type packageJSONFile struct {
 	Dependencies         map[string]string `json:"dependencies"`
 	DevDependencies      map[string]string `json:"devDependencies"`
@@ -207,6 +282,67 @@ func parseRequirementsDependencies(data []byte, manifestPath string) []RegistryD
 	return out
 }
 
+func parsePythonTOMLLockDependencies(data []byte, manifestPath string) []RegistryDependency {
+	out := []RegistryDependency{}
+	var name, version string
+	flush := func() {
+		if name != "" && version != "" {
+			out = append(out, RegistryDependency{
+				Ecosystem:    "PyPI",
+				Name:         name,
+				Version:      version,
+				ManifestPath: manifestPath,
+				Source:       filepath.Base(manifestPath),
+			})
+		}
+		name = ""
+		version = ""
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "[[package]]" {
+			flush()
+			continue
+		}
+		if value, ok := quotedTOMLValue(line, "name"); ok {
+			name = value
+		}
+		if value, ok := quotedTOMLValue(line, "version"); ok {
+			version = cleanExactVersion(value)
+		}
+	}
+	flush()
+	return out
+}
+
+func parsePipfileLockDependencies(data []byte, manifestPath string) []RegistryDependency {
+	var lock map[string]map[string]struct {
+		Version string `json:"version"`
+	}
+	if err := json.Unmarshal(data, &lock); err != nil {
+		return nil
+	}
+	out := []RegistryDependency{}
+	for group, dependencies := range lock {
+		for name, dependency := range dependencies {
+			version := cleanExactVersion(dependency.Version)
+			if name == "" || version == "" {
+				continue
+			}
+			out = append(out, RegistryDependency{
+				Ecosystem:    "PyPI",
+				Name:         name,
+				Version:      version,
+				ManifestPath: manifestPath,
+				Source:       "Pipfile.lock",
+				Direct:       true,
+				Dev:          group == "develop",
+			})
+		}
+	}
+	return out
+}
+
 func parseGoModDependencies(data []byte, manifestPath string) []RegistryDependency {
 	out := []RegistryDependency{}
 	inBlock := false
@@ -239,6 +375,29 @@ func parseGoModDependencies(data []byte, manifestPath string) []RegistryDependen
 			ManifestPath: manifestPath,
 			Source:       "go.mod",
 			Direct:       true,
+		})
+	}
+	return out
+}
+
+func parseGoSumDependencies(data []byte, manifestPath string) []RegistryDependency {
+	out := []RegistryDependency{}
+	for _, line := range strings.Split(string(data), "\n") {
+		parts := strings.Fields(line)
+		if len(parts) < 2 {
+			continue
+		}
+		version := strings.TrimSuffix(parts[1], "/go.mod")
+		version = cleanExactVersion(strings.TrimPrefix(version, "v"))
+		if parts[0] == "" || version == "" {
+			continue
+		}
+		out = append(out, RegistryDependency{
+			Ecosystem:    "Go",
+			Name:         parts[0],
+			Version:      version,
+			ManifestPath: manifestPath,
+			Source:       "go.sum",
 		})
 	}
 	return out
@@ -291,7 +450,7 @@ func quotedTOMLValue(line string, key string) (string, bool) {
 func cleanExactVersion(version string) string {
 	version = strings.TrimSpace(version)
 	version = strings.Trim(version, `"'`)
-	version = strings.TrimPrefix(version, "=")
+	version = strings.TrimLeft(version, "=")
 	if strings.HasPrefix(version, "v") && len(version) > 1 && version[1] >= '0' && version[1] <= '9' {
 		version = strings.TrimPrefix(version, "v")
 	}

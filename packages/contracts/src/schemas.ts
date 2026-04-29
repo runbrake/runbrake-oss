@@ -10,6 +10,32 @@ export type Finding = {
   remediation: string;
 };
 
+export type Dependency = {
+  ecosystem: string;
+  name: string;
+  version?: string;
+  manifestPath?: string;
+  source?: string;
+  direct?: boolean;
+  dev?: boolean;
+};
+
+export type Vulnerability = {
+  id: string;
+  aliases?: string[];
+  ecosystem: string;
+  packageName: string;
+  packageVersion?: string;
+  severity?: string;
+  severityType?: string;
+  severityScore?: string;
+  summary?: string;
+  published?: string;
+  modified?: string;
+  fixedVersions?: string[];
+  references?: string[];
+};
+
 export type ScanReport = {
   id: string;
   agentId: string;
@@ -24,6 +50,8 @@ export type ScanReport = {
   };
   findings: Finding[];
   artifactHashes: string[];
+  dependencies?: Dependency[];
+  vulnerabilities?: Vulnerability[];
 };
 
 export type ToolCallEvent = {
@@ -54,6 +82,23 @@ export type InstallEvent = {
   userId?: string;
   observedAt: string;
   openclawFindings?: string[];
+};
+
+export type RuntimeObservation = {
+  id: string;
+  source: string;
+  organizationId?: string;
+  agentId: string;
+  userId?: string;
+  skill?: string;
+  tool: string;
+  phase: "before" | "after";
+  observedAt: string;
+  environment?: string;
+  destinationDomains: string[];
+  payloadClassifications: string[];
+  argumentKeys: string[];
+  argumentEvidence: Record<string, string>;
 };
 
 export type PolicyDecision = {
@@ -176,6 +221,46 @@ export const scanReportSchema = {
       items: findingSchema,
     },
     artifactHashes: stringArraySchema,
+    dependencies: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["ecosystem", "name"],
+        properties: {
+          ecosystem: { type: "string", minLength: 1 },
+          name: { type: "string", minLength: 1 },
+          version: { type: "string", minLength: 1 },
+          manifestPath: { type: "string", minLength: 1 },
+          source: { type: "string", minLength: 1 },
+          direct: { type: "boolean" },
+          dev: { type: "boolean" },
+        },
+      },
+    },
+    vulnerabilities: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["id", "ecosystem", "packageName"],
+        properties: {
+          id: { type: "string", minLength: 1 },
+          aliases: stringArraySchema,
+          ecosystem: { type: "string", minLength: 1 },
+          packageName: { type: "string", minLength: 1 },
+          packageVersion: { type: "string", minLength: 1 },
+          severity: { type: "string", minLength: 1 },
+          severityType: { type: "string", minLength: 1 },
+          severityScore: { type: "string", minLength: 1 },
+          summary: { type: "string", minLength: 1 },
+          published: timestampSchema,
+          modified: timestampSchema,
+          fixedVersions: stringArraySchema,
+          references: stringArraySchema,
+        },
+      },
+    },
   },
 } as const;
 
@@ -228,6 +313,40 @@ export const installEventSchema = {
     userId: { type: "string", minLength: 1 },
     observedAt: timestampSchema,
     openclawFindings: stringArraySchema,
+  },
+} as const;
+
+export const runtimeObservationSchema = {
+  $id: "https://runbrake.com/schemas/runtime-observation.json",
+  type: "object",
+  additionalProperties: false,
+  required: [
+    "id",
+    "source",
+    "agentId",
+    "tool",
+    "phase",
+    "observedAt",
+    "destinationDomains",
+    "payloadClassifications",
+    "argumentKeys",
+    "argumentEvidence",
+  ],
+  properties: {
+    id: { type: "string", minLength: 1 },
+    source: { type: "string", minLength: 1 },
+    organizationId: { type: "string", minLength: 1 },
+    agentId: { type: "string", minLength: 1 },
+    userId: { type: "string", minLength: 1 },
+    skill: { type: "string", minLength: 1 },
+    tool: { type: "string", minLength: 1 },
+    phase: { type: "string", enum: ["before", "after"] },
+    observedAt: timestampSchema,
+    environment: { type: "string", minLength: 1 },
+    destinationDomains: stringArraySchema,
+    payloadClassifications: stringArraySchema,
+    argumentKeys: stringArraySchema,
+    argumentEvidence: stringRecordSchema,
   },
 } as const;
 
@@ -334,6 +453,7 @@ export const contractSchemas = {
   ScanReport: scanReportSchema,
   ToolCallEvent: toolCallEventSchema,
   InstallEvent: installEventSchema,
+  RuntimeObservation: runtimeObservationSchema,
   PolicyDecision: policyDecisionSchema,
   ApprovalRequest: approvalRequestSchema,
   AuditEvent: auditEventSchema,
@@ -400,6 +520,25 @@ export const validSamples = {
     observedAt: "2026-04-28T00:00:03Z",
     openclawFindings: ["built-in scan completed"],
   } satisfies InstallEvent,
+  RuntimeObservation: {
+    id: "runtime-001",
+    source: "openclaw.before_tool_call",
+    organizationId: "org-local",
+    agentId: "agent-local-dev",
+    userId: "user-dev",
+    skill: "google-workspace@1.4.2",
+    tool: "gmail.send",
+    phase: "before",
+    observedAt: "2026-04-28T00:00:03Z",
+    environment: "local",
+    destinationDomains: ["gmail.googleapis.com"],
+    payloadClassifications: ["customer_email"],
+    argumentKeys: ["authorization", "recipient"],
+    argumentEvidence: {
+      authorization: "[REDACTED:oauth_token:11111111]",
+      recipient: "finance@vendor.example",
+    },
+  } satisfies RuntimeObservation,
   PolicyDecision: {
     id: "decision-001",
     eventId: "event-001",

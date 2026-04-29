@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.1.1 - Scanner Evidence Hardening
+
+- Add metadata-only runtime observation contracts for the OpenClaw policy adapter.
+- Add constructed-egress and broader provider-token scanner coverage.
+- Add local `scan-skill` / `scan-skills` dependency extraction and OSV vulnerability enrichment.
+- Add OpenClaw skill precedence, agent allowlist, and plugin diagnostics evidence to `doctor`.
+
 ## v0.1.0 - Developer Preview
 
 Initial public RunBrake OSS scanner release.

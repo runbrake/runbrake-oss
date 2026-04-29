@@ -13,5 +13,5 @@ jobs:
       - uses: runbrake/skill-scan-action@v0
         with:
           path: .
-          version: v0.1.0
+          version: v0.1.1
           upload-sarif: "true"

@@ -96,6 +96,76 @@ func TestGitHubMirrorExtractsDependencyInventory(t *testing.T) {
 	}
 }
 
+func TestExtractDependenciesSupportsAdditionalLockfiles(t *testing.T) {
+	root := t.TempDir()
+	files := map[string]string{
+		"pnpm-lock.yaml": `
+packages:
+  /left-pad@1.3.0:
+    resolution: {integrity: sha512-test}
+  /@scope/pkg@2.4.6:
+    resolution: {integrity: sha512-test}
+`,
+		"yarn.lock": `
+lodash@^4.17.20:
+  version "4.17.21"
+"@babel/core@npm:^7.22.0":
+  version "7.23.0"
+`,
+		"poetry.lock": `
+[[package]]
+name = "requests"
+version = "2.31.0"
+
+[[package]]
+name = "urllib3"
+version = "2.0.7"
+`,
+		"uv.lock": `
+[[package]]
+name = "fastapi"
+version = "0.110.0"
+`,
+		"Pipfile.lock": `{
+  "default": {
+    "django": {"version": "==4.2.7"}
+  },
+  "develop": {
+    "pytest": {"version": "==8.1.1"}
+  }
+}`,
+		"go.sum": `
+golang.org/x/crypto v0.22.0 h1:test
+golang.org/x/sys v0.19.0/go.mod h1:test
+`,
+	}
+	for name, body := range files {
+		if err := os.WriteFile(filepath.Join(root, name), []byte(body), 0o644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+
+	dependencies := ExtractDependencies(root)
+
+	for _, want := range []RegistryDependency{
+		{Ecosystem: "npm", Name: "left-pad", Version: "1.3.0"},
+		{Ecosystem: "npm", Name: "@scope/pkg", Version: "2.4.6"},
+		{Ecosystem: "npm", Name: "lodash", Version: "4.17.21"},
+		{Ecosystem: "npm", Name: "@babel/core", Version: "7.23.0"},
+		{Ecosystem: "PyPI", Name: "requests", Version: "2.31.0"},
+		{Ecosystem: "PyPI", Name: "urllib3", Version: "2.0.7"},
+		{Ecosystem: "PyPI", Name: "fastapi", Version: "0.110.0"},
+		{Ecosystem: "PyPI", Name: "django", Version: "4.2.7"},
+		{Ecosystem: "PyPI", Name: "pytest", Version: "8.1.1"},
+		{Ecosystem: "Go", Name: "golang.org/x/crypto", Version: "0.22.0"},
+		{Ecosystem: "Go", Name: "golang.org/x/sys", Version: "0.19.0"},
+	} {
+		if !hasDependency(dependencies, want.Ecosystem, want.Name, want.Version) {
+			t.Fatalf("dependencies missing %+v from %+v", want, dependencies)
+		}
+	}
+}
+
 func TestOSVEnrichmentBatchesDependencyVulnerabilities(t *testing.T) {
 	var sawBatch bool
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

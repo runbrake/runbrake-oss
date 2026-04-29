@@ -29,6 +29,7 @@ The local sidecar policy engine is intended to be part of the open-source local 
 | User content         | Not collected by OSS   | Prompt bodies, email bodies, chat transcripts         |
 | Registry scan output | Written by user choice | JSON, Markdown, SARIF, report packs, local archives   |
 | Policy hook metadata | Metadata-first         | Tool name, skill name, redacted argument summaries    |
+| Dependency evidence  | Metadata-first         | Package ecosystem, name, exact version, advisory ID   |
 
 ## Local Redaction
 
@@ -41,6 +42,7 @@ Redaction runs before findings are rendered to console, Markdown, JSON, or SARIF
 - Bearer tokens
 - Webhook signing secrets
 - Database connection strings
+- Common provider tokens such as AWS, Slack, Stripe, GitHub fine-grained, npm, PyPI, JWT, and Google service-account private-key patterns
 
 Redacted evidence should preserve enough context for review without exposing the secret value.
 
@@ -62,11 +64,11 @@ The GitHub Action runs the scanner in the user's workflow and can upload SARIF t
 
 ## Registry Scans
 
-Public registry scans read public OpenClaw/ClawHub sources. They do not execute public skills and do not contact third-party services referenced by scanned skills. Reports may include public owner handles, slugs, versions, source URLs, artifact hashes, rule IDs, severities, and redacted evidence.
+Public registry scans read public OpenClaw/ClawHub sources. They do not execute public skills and do not contact third-party services referenced by scanned skills. Reports may include public owner handles, slugs, versions, source URLs, artifact hashes, rule IDs, severities, dependency coordinates, advisory IDs, and redacted evidence.
 
 ## Policy Plugin Adapter
 
-The OpenClaw policy-plugin adapter uses metadata-first event shapes. Runtime and install hook payloads are converted into contract-shaped records with IDs, tool or package names, destination domains, data classifications, and optional redacted argument summaries. Raw package bodies, prompt transcripts, file contents, and unredacted secrets are not part of the default adapter contract.
+The OpenClaw policy-plugin adapter uses metadata-first event shapes. Runtime and install hook payloads are converted into contract-shaped records with IDs, tool or package names, destination domains, data classifications, and optional redacted argument summaries. Runtime observations are recorded separately from policy decisions so operators can distinguish "observed tool-call metadata" from "allowed or blocked by policy." Raw package bodies, prompt transcripts, file contents, and unredacted secrets are not part of the default adapter contract.
 
 ## User Controls
 

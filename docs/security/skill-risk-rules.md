@@ -15,6 +15,8 @@ Phase 2 skill scans emit stable `RB-SKILL-*` rule IDs. Rule IDs are part of the 
 | `RB-SKILL-HIDDEN-UNICODE`           | Medium   | Skill files contain bidirectional or zero-width Unicode controls.                                              | Quarantine                           |
 | `RB-SKILL-PROMPT-INJECTION-BAIT`    | Medium   | Skill instructions ask the agent to ignore higher-priority instructions, exfiltrate data, or reveal secrets.   | Quarantine                           |
 | `RB-SKILL-UNKNOWN-EGRESS`           | Medium   | Skill source, text, or scripts reference network domains outside the local allowlist.                          | Approval required for network egress |
+| `RB-SKILL-CONSTRUCTED-EGRESS`       | Medium   | Skill source or scripts dynamically assemble or decode network destinations.                                   | Approval required for network egress |
+| `RB-SKILL-VULNERABLE-DEPENDENCY`    | High     | Local dependency or lockfile coordinates match OSV advisory data.                                              | Quarantine                           |
 | `RB-SKILL-SIMILAR-NAME-PACKAGE`     | Medium   | Dependencies are within a small edit distance of common package names, indicating typosquat risk.              | Quarantine                           |
 
 Evidence is redacted locally before rendering console, Markdown, JSON, or SARIF output.

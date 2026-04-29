@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -36,6 +37,7 @@ const (
 )
 
 var urlPattern = regexp.MustCompile(`https?://[A-Za-z0-9._~:/?#\[\]@!$&'()*+,;=%-]+`)
+var quotedStringPattern = regexp.MustCompile(`["']([^"']{1,200})["']`)
 
 func Scan(options ScanOptions) (Result, error) {
 	if strings.TrimSpace(options.Target) == "" {
@@ -250,6 +252,9 @@ func scanArtifact(artifact doctor.Artifact, files []scannedFile, pkg packageJSON
 	}
 	if evidence := unknownEgressEvidence(artifact, files, pkg, options); len(evidence) > 0 {
 		add(RuleUnknownEgress, evidence)
+	}
+	if evidence := constructedEgressEvidence(files, pkg); len(evidence) > 0 {
+		add(RuleConstructedEgress, evidence)
 	}
 	if evidence := similarNameEvidence(pkg); len(evidence) > 0 {
 		add(RuleSimilarNamePackage, evidence)
@@ -617,18 +622,59 @@ func unknownEgressEvidence(artifact doctor.Artifact, files []scannedFile, pkg pa
 		evidence = append(evidence, fmt.Sprintf("%s %s source references unknown domain %s", artifact.Kind, artifact.Name, domain))
 	}
 	for _, file := range files {
-		for _, rawURL := range urlPattern.FindAllString(file.Text, -1) {
+		for _, rawURL := range extractedURLs(file.Text) {
 			if domain := unknownDomain(rawURL, options.AllowDomains); domain != "" {
 				evidence = append(evidence, file.Rel+" references unknown egress domain "+domain)
 			}
 		}
 	}
 	for name, command := range pkg.Scripts {
-		for _, rawURL := range urlPattern.FindAllString(command, -1) {
+		for _, rawURL := range extractedURLs(command) {
 			if domain := unknownDomain(rawURL, options.AllowDomains); domain != "" {
 				evidence = append(evidence, "package script "+name+" references unknown egress domain "+domain)
 			}
 		}
+	}
+	return sortedUnique(evidence)
+}
+
+func extractedURLs(text string) []string {
+	urls := append([]string(nil), urlPattern.FindAllString(text, -1)...)
+	for _, match := range quotedStringPattern.FindAllStringSubmatch(text, -1) {
+		if len(match) < 2 {
+			continue
+		}
+		decoded, err := base64.StdEncoding.DecodeString(match[1])
+		if err != nil {
+			continue
+		}
+		urls = append(urls, urlPattern.FindAllString(string(decoded), -1)...)
+	}
+	return sortedUnique(urls)
+}
+
+func constructedEgressEvidence(files []scannedFile, pkg packageJSON) []string {
+	evidence := []string{}
+	check := func(location, text string) {
+		lower := strings.ToLower(text)
+		if strings.Contains(lower, ".join(\".\")") || strings.Contains(lower, ".join('.')") {
+			evidence = append(evidence, location+" dynamically joins domain labels")
+		}
+		if strings.Contains(lower, `"https://" +`) || strings.Contains(lower, `'https://' +`) ||
+			strings.Contains(lower, "`https://${") || strings.Contains(lower, "new url(") {
+			evidence = append(evidence, location+" dynamically constructs a URL")
+		}
+		for _, rawURL := range extractedURLs(text) {
+			if domain := unknownDomain(rawURL, nil); domain != "" && strings.Contains(lower, "atob(") {
+				evidence = append(evidence, location+" decodes hidden URL domain "+domain)
+			}
+		}
+	}
+	for _, file := range files {
+		check(file.Rel, file.Text)
+	}
+	for name, command := range pkg.Scripts {
+		check("package script "+name, command)
 	}
 	return sortedUnique(evidence)
 }
