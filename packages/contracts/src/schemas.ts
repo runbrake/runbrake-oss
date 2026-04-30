@@ -144,6 +144,40 @@ export type AuditEvent = {
   signature: string;
 };
 
+export type CheckReceipt = {
+  id: string;
+  eventId: string;
+  surface: "startup" | "install" | "runtime" | "watch";
+  ecosystem: "openclaw" | "hermes";
+  status:
+    | "active"
+    | "allowed"
+    | "shadowed"
+    | "redacted"
+    | "approval_required"
+    | "blocked"
+    | "quarantined"
+    | "kill_switch"
+    | "fail_open"
+    | "observed";
+  severity: Severity;
+  headline: string;
+  detail: string;
+  policyId?: string;
+  auditEventId?: string;
+  evidenceHash?: string;
+  ruleIds: string[];
+  observedAt: string;
+};
+
+export type SessionNotice = {
+  id: string;
+  receiptId: string;
+  channel: "agent_session" | "terminal" | "local_log";
+  level: "info" | "warning" | "critical";
+  message: string;
+};
+
 const timestampSchema = {
   type: "string",
   minLength: 20,
@@ -448,6 +482,79 @@ export const auditEventSchema = {
   },
 } as const;
 
+export const checkReceiptSchema = {
+  $id: "https://runbrake.com/schemas/check-receipt.json",
+  type: "object",
+  additionalProperties: false,
+  required: [
+    "id",
+    "eventId",
+    "surface",
+    "ecosystem",
+    "status",
+    "severity",
+    "headline",
+    "detail",
+    "ruleIds",
+    "observedAt",
+  ],
+  properties: {
+    id: { type: "string", minLength: 1 },
+    eventId: { type: "string", minLength: 1 },
+    surface: {
+      type: "string",
+      enum: ["startup", "install", "runtime", "watch"],
+    },
+    ecosystem: { type: "string", enum: ["openclaw", "hermes"] },
+    status: {
+      type: "string",
+      enum: [
+        "active",
+        "allowed",
+        "shadowed",
+        "redacted",
+        "approval_required",
+        "blocked",
+        "quarantined",
+        "kill_switch",
+        "fail_open",
+        "observed",
+      ],
+    },
+    severity: {
+      type: "string",
+      enum: ["critical", "high", "medium", "low", "info"],
+    },
+    headline: { type: "string", minLength: 1 },
+    detail: { type: "string", minLength: 1 },
+    policyId: { type: "string", minLength: 1 },
+    auditEventId: { type: "string", minLength: 1 },
+    evidenceHash: { type: "string", minLength: 32 },
+    ruleIds: {
+      type: "array",
+      items: { type: "string", minLength: 1 },
+    },
+    observedAt: timestampSchema,
+  },
+} as const;
+
+export const sessionNoticeSchema = {
+  $id: "https://runbrake.com/schemas/session-notice.json",
+  type: "object",
+  additionalProperties: false,
+  required: ["id", "receiptId", "channel", "level", "message"],
+  properties: {
+    id: { type: "string", minLength: 1 },
+    receiptId: { type: "string", minLength: 1 },
+    channel: {
+      type: "string",
+      enum: ["agent_session", "terminal", "local_log"],
+    },
+    level: { type: "string", enum: ["info", "warning", "critical"] },
+    message: { type: "string", minLength: 1 },
+  },
+} as const;
+
 export const contractSchemas = {
   Finding: findingSchema,
   ScanReport: scanReportSchema,
@@ -457,6 +564,8 @@ export const contractSchemas = {
   PolicyDecision: policyDecisionSchema,
   ApprovalRequest: approvalRequestSchema,
   AuditEvent: auditEventSchema,
+  CheckReceipt: checkReceiptSchema,
+  SessionNotice: sessionNoticeSchema,
 } as const;
 
 const findingSample: Finding = {
@@ -575,4 +684,28 @@ export const validSamples = {
     signature:
       "ed25519:4444444444444444444444444444444444444444444444444444444444444444",
   } satisfies AuditEvent,
+  CheckReceipt: {
+    id: "receipt-001",
+    eventId: "event-001",
+    surface: "runtime",
+    ecosystem: "openclaw",
+    status: "approval_required",
+    severity: "medium",
+    headline: "RunBrake checked gmail.send",
+    detail: "policy-external-email-approval requires approval",
+    policyId: "policy-external-email-approval",
+    auditEventId: "audit-001",
+    evidenceHash:
+      "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+    ruleIds: ["RB-SKILL-UNKNOWN-EGRESS"],
+    observedAt: "2026-04-28T00:00:04Z",
+  } satisfies CheckReceipt,
+  SessionNotice: {
+    id: "notice-001",
+    receiptId: "receipt-001",
+    channel: "agent_session",
+    level: "warning",
+    message:
+      "RunBrake checked gmail.send - approval_required - policy-external-email-approval",
+  } satisfies SessionNotice,
 } as const;

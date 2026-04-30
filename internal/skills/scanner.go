@@ -22,6 +22,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/runbrake/runbrake-oss/internal/doctor"
+	"github.com/runbrake/runbrake-oss/internal/hermes"
 	"github.com/runbrake/runbrake-oss/internal/redaction"
 )
 
@@ -78,7 +79,7 @@ func ScanMany(options ScanOptions) (Result, error) {
 		return Result{}, fmt.Errorf("scan-skills expects a local directory")
 	}
 
-	targets, err := childSkillTargets(options.Target)
+	targets, err := childSkillTargets(options.Target, normalizedEcosystem(options.Ecosystem))
 	if err != nil {
 		return Result{}, err
 	}
@@ -99,7 +100,8 @@ func scanTargets(targets []string, options ScanOptions, agentID string) (Result,
 	}
 
 	result := Result{
-		Root: strings.TrimSpace(options.Target),
+		Root:      strings.TrimSpace(options.Target),
+		Ecosystem: normalizedEcosystem(options.Ecosystem),
 		Report: doctor.ScanReport{
 			ID:             "skill-scan-" + shortHash(strings.Join(targets, "|")+"|"+now.UTC().Format(time.RFC3339)),
 			AgentID:        agentID,
@@ -118,6 +120,8 @@ func scanTargets(targets []string, options ScanOptions, agentID string) (Result,
 
 		if artifact.Kind == "plugin" {
 			result.Inventory.Plugins = append(result.Inventory.Plugins, artifact)
+		} else if artifact.Kind == "hook" {
+			result.Inventory.Hooks = append(result.Inventory.Hooks, artifact)
 		} else {
 			result.Inventory.Skills = append(result.Inventory.Skills, artifact)
 		}
@@ -127,6 +131,7 @@ func scanTargets(targets []string, options ScanOptions, agentID string) (Result,
 
 	sortArtifacts(result.Inventory.Skills)
 	sortArtifacts(result.Inventory.Plugins)
+	sortArtifacts(result.Inventory.Hooks)
 	result.Report.ArtifactHashes = sortedUnique(result.Report.ArtifactHashes)
 	sortFindings(result.Report.Findings)
 	result.Report.Findings = applySuppressions(result.Report.Findings, result.Inventory, options.Suppressions, now)
@@ -135,7 +140,8 @@ func scanTargets(targets []string, options ScanOptions, agentID string) (Result,
 }
 
 func loadArtifact(root string, options ScanOptions) (doctor.Artifact, []scannedFile, packageJSON, error) {
-	manifestPath, kind, err := findManifest(root)
+	ecosystem := normalizedEcosystem(options.Ecosystem)
+	manifestPath, kind, err := findManifest(root, ecosystem)
 	if err != nil {
 		return doctor.Artifact{}, nil, packageJSON{}, err
 	}
@@ -146,8 +152,21 @@ func loadArtifact(root string, options ScanOptions) (doctor.Artifact, []scannedF
 	}
 
 	var meta manifest
-	if isMarkdownManifest(manifestPath) {
+	if ecosystem == "hermes" && isMarkdownManifest(manifestPath) {
+		skillMeta, err := hermes.ParseSkillFileForScanner(manifestPath)
+		if err != nil {
+			return doctor.Artifact{}, nil, packageJSON{}, err
+		}
+		meta = manifest{
+			Name:        flexibleString(skillMeta.Name),
+			Version:     flexibleString(skillMeta.Version),
+			Permissions: flexibleStringList(skillMeta.RequiresToolsets),
+			Tools:       flexibleStringList(append(append([]string{}, skillMeta.RequiresToolsets...), skillMeta.RequiresTools...)),
+		}
+	} else if isMarkdownManifest(manifestPath) {
 		meta = parseSkillMarkdown(raw)
+	} else if ecosystem == "hermes" && isYAMLManifest(manifestPath) {
+		meta = parseHermesYAMLManifest(raw, kind)
 	} else {
 		if err := json.Unmarshal(raw, &meta); err != nil {
 			return doctor.Artifact{}, nil, packageJSON{}, fmt.Errorf("parse %s: %w", manifestPath, err)
@@ -166,10 +185,18 @@ func loadArtifact(root string, options ScanOptions) (doctor.Artifact, []scannedF
 	}
 
 	fields := map[string]any{}
-	if isMarkdownManifest(manifestPath) {
+	if ecosystem == "hermes" && isMarkdownManifest(manifestPath) {
+		skillMeta, err := hermes.ParseSkillFileForScanner(manifestPath)
+		if err != nil {
+			return doctor.Artifact{}, nil, packageJSON{}, err
+		}
+		fields = hermesSkillFields(skillMeta)
+	} else if isMarkdownManifest(manifestPath) {
 		for key, value := range parseFrontmatter(raw) {
 			fields[key] = value
 		}
+	} else if ecosystem == "hermes" && isYAMLManifest(manifestPath) {
+		fields = parseSimpleYAMLFields(raw)
 	} else {
 		_ = json.Unmarshal(raw, &fields)
 	}
@@ -183,6 +210,7 @@ func loadArtifact(root string, options ScanOptions) (doctor.Artifact, []scannedF
 
 	artifact := doctor.Artifact{
 		Kind:           kind,
+		Ecosystem:      ecosystem,
 		Name:           name,
 		Version:        version,
 		Source:         string(meta.Source),
@@ -259,12 +287,35 @@ func scanArtifact(artifact doctor.Artifact, files []scannedFile, pkg packageJSON
 	if evidence := similarNameEvidence(pkg); len(evidence) > 0 {
 		add(RuleSimilarNamePackage, evidence)
 	}
+	if isHermesArtifact(artifact, options) {
+		if evidence := hermesInlineShellEvidence(artifact); len(evidence) > 0 {
+			add(RuleHermesInlineShell, evidence)
+		}
+		if evidence := hermesRequiredSecretEvidence(artifact); len(evidence) > 0 {
+			add(RuleHermesRequiredSecret, evidence)
+		}
+		if evidence := hermesTerminalEvidence(artifact); len(evidence) > 0 {
+			add(RuleHermesTerminal, evidence)
+		}
+		if evidence := hermesBrowserOrWebEvidence(artifact); len(evidence) > 0 {
+			add(RuleHermesBrowserOrWeb, evidence)
+		}
+		if evidence := hermesGatewayHookEvidence(artifact); len(evidence) > 0 {
+			add(RuleHermesGatewayHook, evidence)
+		}
+		if evidence := hermesPreToolHookEvidence(artifact, files); len(evidence) > 0 {
+			add(RuleHermesPreToolHook, evidence)
+		}
+		if evidence := hermesPluginExposureEvidence(artifact, files); len(evidence) > 0 {
+			add(RuleHermesPluginExposure, evidence)
+		}
+	}
 
 	sortFindings(findings)
 	return findings
 }
 
-func findManifest(root string) (string, string, error) {
+func findManifest(root string, ecosystem string) (string, string, error) {
 	for _, candidate := range []struct {
 		name string
 		kind string
@@ -272,19 +323,26 @@ func findManifest(root string) (string, string, error) {
 		{name: "skill.json", kind: "skill"},
 		{name: "plugin.json", kind: "plugin"},
 		{name: "openclaw.plugin.json", kind: "plugin"},
+		{name: "plugin.yaml", kind: "plugin"},
+		{name: "plugin.yml", kind: "plugin"},
+		{name: "HOOK.yaml", kind: "hook"},
+		{name: "HOOK.yml", kind: "hook"},
 		{name: "SKILL.md", kind: "skill"},
 		{name: "skill.md", kind: "skill"},
 	} {
+		if (candidate.name == "plugin.yaml" || candidate.name == "plugin.yml" || candidate.name == "HOOK.yaml" || candidate.name == "HOOK.yml") && ecosystem != "hermes" {
+			continue
+		}
 		path := filepath.Join(root, candidate.name)
 		if _, err := os.Stat(path); err == nil {
 			return path, candidate.kind, nil
 		}
 	}
-	return "", "", fmt.Errorf("no skill.json, plugin.json, or openclaw.plugin.json found in %s", root)
+	return "", "", fmt.Errorf("no skill.json, plugin.json, openclaw.plugin.json, SKILL.md, plugin.yaml, or HOOK.yaml found in %s", root)
 }
 
-func childSkillTargets(root string) ([]string, error) {
-	if _, _, err := findManifest(root); err == nil {
+func childSkillTargets(root string, ecosystem string) ([]string, error) {
+	if _, _, err := findManifest(root, ecosystem); err == nil {
 		return []string{root}, nil
 	}
 
@@ -303,7 +361,7 @@ func childSkillTargets(root string) ([]string, error) {
 		case ".git", "node_modules", "dist", "coverage", ".cache":
 			return filepath.SkipDir
 		}
-		if _, _, err := findManifest(path); err == nil {
+		if _, _, err := findManifest(path, ecosystem); err == nil {
 			targets = append(targets, path)
 			return filepath.SkipDir
 		}
@@ -318,6 +376,129 @@ func childSkillTargets(root string) ([]string, error) {
 func isMarkdownManifest(path string) bool {
 	name := strings.ToLower(filepath.Base(path))
 	return name == "skill.md"
+}
+
+func isYAMLManifest(path string) bool {
+	ext := strings.ToLower(filepath.Ext(path))
+	return ext == ".yaml" || ext == ".yml"
+}
+
+func normalizedEcosystem(value string) string {
+	return strings.ToLower(strings.TrimSpace(value))
+}
+
+func parseHermesYAMLManifest(raw []byte, kind string) manifest {
+	fields := parseSimpleYAMLFields(raw)
+	return manifest{
+		Name:        flexibleString(stringField(fields, "name")),
+		Version:     flexibleString(stringField(fields, "version")),
+		Tools:       flexibleStringList(splitCSVLike(firstNonEmpty(stringField(fields, "tools"), stringField(fields, "toolsets"), stringField(fields, "events")))),
+		Permissions: flexibleStringList(splitCSVLike(firstNonEmpty(stringField(fields, "permissions"), stringField(fields, "requires_env")))),
+	}
+}
+
+func parseSimpleYAMLFields(raw []byte) map[string]any {
+	fields := map[string]any{}
+	container := ""
+	for _, rawLine := range strings.Split(string(raw), "\n") {
+		line := trimYAMLComment(rawLine)
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		indent := len(line) - len(strings.TrimLeft(line, " "))
+		trimmed := strings.TrimSpace(line)
+		if indent == 0 && strings.HasSuffix(trimmed, ":") {
+			container = strings.TrimSuffix(trimmed, ":")
+			if _, ok := fields[container]; !ok {
+				fields[container] = ""
+			}
+			continue
+		}
+		if strings.HasPrefix(trimmed, "- ") {
+			value := strings.TrimSpace(strings.TrimPrefix(trimmed, "- "))
+			key := container
+			if subKey, subValue, ok := strings.Cut(value, ":"); ok {
+				subKey = strings.TrimSpace(subKey)
+				subValue = cleanYAMLScalar(subValue)
+				if subKey == "name" || subKey == "key" || subKey == "path" || subKey == "file" {
+					value = subValue
+				}
+			} else {
+				value = cleanYAMLScalar(value)
+			}
+			if key != "" && value != "" {
+				fields[key] = appendCSV(stringField(fields, key), value)
+			}
+			continue
+		}
+		key, value, ok := strings.Cut(trimmed, ":")
+		if !ok {
+			continue
+		}
+		key = strings.TrimSpace(key)
+		value = strings.TrimSpace(value)
+		fullKey := key
+		if indent > 0 && container != "" {
+			fullKey = container + "." + key
+		} else if indent == 0 {
+			container = key
+		}
+		cleaned := cleanYAMLScalar(value)
+		if values := splitCSVLike(cleaned); len(values) > 1 {
+			fields[fullKey] = strings.Join(values, ",")
+		} else if cleaned != "" {
+			fields[fullKey] = cleaned
+		}
+	}
+	return fields
+}
+
+func hermesSkillFields(meta hermes.SkillMetadata) map[string]any {
+	return map[string]any{
+		"name":                      meta.Name,
+		"description":               meta.Description,
+		"version":                   meta.Version,
+		"platforms":                 strings.Join(meta.Platforms, ","),
+		"category":                  meta.Category,
+		"requires_toolsets":         strings.Join(meta.RequiresToolsets, ","),
+		"requires_tools":            strings.Join(meta.RequiresTools, ","),
+		"fallback_for_toolsets":     strings.Join(meta.FallbackForToolsets, ","),
+		"fallback_for_tools":        strings.Join(meta.FallbackForTools, ","),
+		"config_keys":               strings.Join(meta.ConfigKeys, ","),
+		"required_env":              strings.Join(meta.RequiredEnv, ","),
+		"required_credential_files": strings.Join(meta.RequiredCredentialFiles, ","),
+		"usesInlineShell":           meta.UsesInlineShell,
+		"script_paths":              strings.Join(meta.ScriptPaths, ","),
+		"reference_paths":           strings.Join(meta.ReferencePaths, ","),
+		"template_paths":            strings.Join(meta.TemplatePaths, ","),
+	}
+}
+
+func stringField(fields map[string]any, key string) string {
+	if value, ok := fields[key].(string); ok {
+		return value
+	}
+	return ""
+}
+
+func appendCSV(existing string, value string) string {
+	if strings.TrimSpace(existing) == "" {
+		return value
+	}
+	return existing + "," + value
+}
+
+func cleanYAMLScalar(value string) string {
+	value = strings.TrimSpace(value)
+	value = strings.Trim(value, `"'`)
+	return strings.Trim(value, "[]")
+}
+
+func trimYAMLComment(line string) string {
+	if idx := strings.Index(line, "#"); idx >= 0 {
+		return line[:idx]
+	}
+	return line
 }
 
 func parseSkillMarkdown(raw []byte) manifest {
@@ -430,7 +611,7 @@ func readRelevantFiles(root string, options ScanOptions) ([]scannedFile, error) 
 
 func isRelevantFile(name string) bool {
 	switch strings.ToLower(filepath.Ext(name)) {
-	case ".json", ".md", ".txt", ".sh", ".bash", ".zsh", ".js", ".ts", ".tsx", ".mjs", ".cjs", ".yaml", ".yml", ".toml":
+	case ".json", ".md", ".txt", ".sh", ".bash", ".zsh", ".js", ".ts", ".tsx", ".mjs", ".cjs", ".py", ".yaml", ".yml", ".toml":
 		return true
 	default:
 		return false
@@ -748,6 +929,101 @@ func similarNameEvidence(pkg packageJSON) []string {
 				evidence = append(evidence, fmt.Sprintf("dependency %s is similar to popular package %s", dep, target))
 				break
 			}
+		}
+	}
+	return sortedUnique(evidence)
+}
+
+func isHermesArtifact(artifact doctor.Artifact, options ScanOptions) bool {
+	return normalizedEcosystem(options.Ecosystem) == "hermes" || artifact.Ecosystem == "hermes"
+}
+
+func hermesInlineShellEvidence(artifact doctor.Artifact) []string {
+	if strings.EqualFold(artifact.ManifestFields["usesInlineShell"], "true") {
+		return []string{artifact.ManifestPath + " declares or contains Hermes inline shell snippets"}
+	}
+	return nil
+}
+
+func hermesRequiredSecretEvidence(artifact doctor.Artifact) []string {
+	evidence := []string{}
+	for _, key := range []string{"required_env", "required_environment_variables", "required_credential_files", "requires_env"} {
+		if value := strings.TrimSpace(artifact.ManifestFields[key]); value != "" {
+			evidence = append(evidence, artifact.ManifestPath+" requires "+key+" "+value)
+		}
+	}
+	return sortedUnique(evidence)
+}
+
+func hermesTerminalEvidence(artifact doctor.Artifact) []string {
+	evidence := []string{}
+	for _, value := range append(slices.Clone(artifact.Permissions), artifact.Tools...) {
+		switch strings.ToLower(strings.TrimSpace(value)) {
+		case "terminal", "shell", "bash", "sh", "exec", "command_exec", "hermes-cli":
+			evidence = append(evidence, artifact.ManifestPath+" requires terminal toolset "+value)
+		}
+	}
+	return sortedUnique(evidence)
+}
+
+func hermesBrowserOrWebEvidence(artifact doctor.Artifact) []string {
+	evidence := []string{}
+	for _, value := range append(slices.Clone(artifact.Permissions), artifact.Tools...) {
+		lower := strings.ToLower(strings.TrimSpace(value))
+		if lower == "browser" || lower == "web" || lower == "internet" || lower == "fetch" || lower == "network" || strings.Contains(lower, "browser") {
+			evidence = append(evidence, artifact.ManifestPath+" requires browser or web toolset "+value)
+		}
+	}
+	return sortedUnique(evidence)
+}
+
+func hermesGatewayHookEvidence(artifact doctor.Artifact) []string {
+	if artifact.Kind != "hook" {
+		return nil
+	}
+	events := splitCSVLike(artifact.ManifestFields["events"])
+	if len(events) == 0 {
+		return nil
+	}
+	for _, event := range events {
+		if strings.EqualFold(strings.TrimSpace(event), "pre_tool_call") {
+			continue
+		}
+		return []string{artifact.ManifestPath + " installs a Hermes gateway hook for " + event}
+	}
+	return nil
+}
+
+func hermesPreToolHookEvidence(artifact doctor.Artifact, files []scannedFile) []string {
+	evidence := []string{}
+	if strings.Contains(strings.ToLower(artifact.ManifestFields["events"]), "pre_tool_call") {
+		evidence = append(evidence, artifact.ManifestPath+" subscribes to pre_tool_call")
+	}
+	for _, file := range files {
+		if strings.Contains(strings.ToLower(file.Text), "pre_tool_call") {
+			evidence = append(evidence, file.Rel+" references pre_tool_call")
+		}
+	}
+	return sortedUnique(evidence)
+}
+
+func hermesPluginExposureEvidence(artifact doctor.Artifact, files []scannedFile) []string {
+	if artifact.Kind != "plugin" {
+		return nil
+	}
+	evidence := []string{}
+	for _, file := range files {
+		lower := strings.ToLower(file.Text)
+		if strings.Contains(lower, "ctx.tools.") || strings.Contains(lower, ".tools.") || strings.Contains(lower, "register_tool") {
+			evidence = append(evidence, file.Rel+" registers Hermes tools")
+			continue
+		}
+		hookText := lower
+		for _, marker := range []string{"ctx.hooks.pre_tool_call", ".hooks.pre_tool_call", "hooks.pre_tool_call"} {
+			hookText = strings.ReplaceAll(hookText, marker, "")
+		}
+		if strings.Contains(hookText, "ctx.hooks.") || strings.Contains(hookText, ".hooks.") {
+			evidence = append(evidence, file.Rel+" registers Hermes hooks beyond pre_tool_call")
 		}
 	}
 	return sortedUnique(evidence)

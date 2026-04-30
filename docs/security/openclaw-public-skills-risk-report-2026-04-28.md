@@ -122,7 +122,7 @@ The highest-priority review queue should start with skills that combine multiple
 The scan was generated with a local mirror of the official public repository and cached OSV enrichment:
 
 ```bash
-/tmp/runbrake-phase2-8 scan-registry openclaw \
+/tmp/runbrake-scan scan-registry openclaw \
   --source github \
   --mirror-path .cache/runbrake/registries/openclaw-skills \
   --limit 0 \
@@ -136,7 +136,7 @@ The scan was generated with a local mirror of the official public repository and
   --format json \
   --output /tmp/runbrake-openclaw-full-enriched-registry.json
 
-/tmp/runbrake-phase2-8 registry-report-pack \
+/tmp/runbrake-scan registry-report-pack \
   --input /tmp/runbrake-openclaw-full-enriched-registry.json \
   --output-dir /tmp/runbrake-openclaw-public-skills-report-pack \
   --top-skills 50 \

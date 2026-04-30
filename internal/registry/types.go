@@ -20,9 +20,10 @@ type Finding = doctor.Finding
 type RegistrySourceType string
 
 const (
-	SourceGitHub  RegistrySourceType = "github"
-	SourceClawHub RegistrySourceType = "clawhub"
-	SourceLocal   RegistrySourceType = "local"
+	SourceGitHub       RegistrySourceType = "github"
+	SourceHermesGitHub RegistrySourceType = "hermes-github"
+	SourceClawHub      RegistrySourceType = "clawhub"
+	SourceLocal        RegistrySourceType = "local"
 )
 
 type ScanOptions struct {
@@ -128,6 +129,9 @@ type RegistrySkillResult struct {
 	Source                    string                   `json:"source,omitempty"`
 	SourceURL                 string                   `json:"sourceUrl,omitempty"`
 	SourceCommit              string                   `json:"sourceCommit,omitempty"`
+	SourcePath                string                   `json:"sourcePath,omitempty"`
+	Category                  string                   `json:"category,omitempty"`
+	Bundled                   *bool                    `json:"bundled,omitempty"`
 	Path                      string                   `json:"path,omitempty"`
 	ManifestPath              string                   `json:"manifestPath,omitempty"`
 	ArtifactHash              string                   `json:"artifactHash,omitempty"`
@@ -234,6 +238,9 @@ type skillMetadata struct {
 	Source                 string
 	SourceURL              string
 	SourceCommit           string
+	SourcePath             string
+	Category               string
+	Bundled                *bool
 }
 
 func newReport(options ScanOptions, source RegistrySource) RegistryScanReport {
@@ -285,6 +292,9 @@ func scanSkillDirectory(options ScanOptions, root string, meta skillMetadata) Re
 		Source:                 meta.Source,
 		SourceURL:              meta.SourceURL,
 		SourceCommit:           meta.SourceCommit,
+		SourcePath:             meta.SourcePath,
+		Category:               meta.Category,
+		Bundled:                meta.Bundled,
 		Path:                   root,
 		RiskLevel:              "unknown",
 		Findings:               []Finding{},
@@ -292,6 +302,7 @@ func scanSkillDirectory(options ScanOptions, root string, meta skillMetadata) Re
 
 	scan, err := skills.Scan(skills.ScanOptions{
 		Target:               root,
+		Ecosystem:            scanEcosystem(options),
 		Now:                  resolvedNow(options.Now),
 		ScannerVersion:       resolvedScannerVersion(options.ScannerVersion),
 		HTTPClient:           options.HTTPClient,
@@ -314,6 +325,7 @@ func scanSkillDirectory(options ScanOptions, root string, meta skillMetadata) Re
 	result.DisplayName = firstNonEmpty(result.DisplayName, artifact.ManifestFields["displayName"], artifact.ManifestFields["name"], artifact.Name, result.Slug)
 	result.Version = firstNonEmpty(result.Version, artifact.Version)
 	result.Source = firstNonEmpty(result.Source, artifact.Source)
+	result.Category = firstNonEmpty(result.Category, artifact.ManifestFields["category"])
 	result.ManifestPath = artifact.ManifestPath
 	result.ArtifactHash = artifact.Hash
 	result.Findings = append([]Finding(nil), scan.Report.Findings...)
@@ -327,6 +339,13 @@ func scanSkillDirectory(options ScanOptions, root string, meta skillMetadata) Re
 		result.Dependencies = ExtractDependencies(root)
 	}
 	return result
+}
+
+func scanEcosystem(options ScanOptions) string {
+	if strings.EqualFold(strings.TrimSpace(options.Registry), "hermes") {
+		return "hermes"
+	}
+	return ""
 }
 
 func firstArtifact(inventory doctor.Inventory) doctor.Artifact {

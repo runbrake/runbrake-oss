@@ -1,4 +1,4 @@
-import type { AuditEvent, InstallEvent, PolicyDecision, RuntimeObservation, ToolCallEvent } from "@runbrake/contracts";
+import type { AuditEvent, CheckReceipt, InstallEvent, PolicyDecision, RuntimeObservation, SessionNotice, ToolCallEvent } from "@runbrake/contracts";
 export type PackageIdentity = {
     name: string;
     phase: "sidecar-shadow-policy";
@@ -71,13 +71,15 @@ export type RuntimeObservationOptions = {
 export type SidecarDecisionResponse = {
     decision: PolicyDecision;
     auditEvent?: AuditEvent;
+    receipt?: CheckReceipt;
 };
 export type SidecarRuntimeObservationResponse = {
     observation?: RuntimeObservation;
     auditEvent?: AuditEvent;
+    receipt?: CheckReceipt;
 };
 export type FetchLike = (url: string, init: {
-    method: "POST";
+    method: "GET" | "POST";
     headers: Record<string, string>;
     body: string;
 }) => Promise<{
@@ -90,6 +92,12 @@ export type SidecarClientOptions = {
     sidecarUrl?: string;
     fetchImpl?: FetchLike;
     now?: Date;
+};
+export type ReceiptVerbosity = "off" | "quiet" | "all";
+export type SessionNoticeSink = (notice: SessionNotice) => unknown | Promise<unknown>;
+export type ReceiptOptions = {
+    receiptVerbosity?: ReceiptVerbosity;
+    noticeSink?: SessionNoticeSink;
 };
 export type OpenClawBeforeToolCallEvent = {
     toolName: string;
@@ -194,10 +202,10 @@ export type BeforeToolCallHandlerOptions = SidecarClientOptions & ToolCallEventO
     payloadClassifications?: string[];
     priority?: number;
     recordRuntimeObservations?: boolean;
-};
+} & ReceiptOptions;
 export type BeforeInstallHandlerOptions = SidecarClientOptions & InstallEventOptions & {
     priority?: number;
-};
+} & ReceiptOptions;
 export declare function packageIdentity(): PackageIdentity;
 export declare function toToolCallEvent(input: ToolCallInput, options?: ToolCallEventOptions): ToolCallEvent;
 export declare function toInstallEvent(input: InstallInput, options?: InstallEventOptions): InstallEvent;
@@ -205,6 +213,7 @@ export declare function toRuntimeObservation(input: RuntimeObservationInput, opt
 export declare function requestPolicyDecision(event: ToolCallEvent, options?: SidecarClientOptions): Promise<SidecarDecisionResponse>;
 export declare function requestInstallDecision(event: InstallEvent, options?: SidecarClientOptions): Promise<SidecarDecisionResponse>;
 export declare function requestRuntimeObservation(observation: RuntimeObservation, options?: SidecarClientOptions): Promise<SidecarRuntimeObservationResponse | undefined>;
+export declare function createStartupReceipt(options?: SidecarClientOptions & ReceiptOptions): Promise<CheckReceipt>;
 export declare function decisionToBeforeToolCallResult(decision: PolicyDecision): BeforeToolCallResult | undefined;
 export declare function decisionToBeforeInstallResult(decision: PolicyDecision): BeforeInstallResult | undefined;
 export declare function createBeforeToolCallHandler(options?: BeforeToolCallHandlerOptions): OpenClawBeforeToolCallHandler;

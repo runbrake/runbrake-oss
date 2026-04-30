@@ -2,7 +2,7 @@
 
 ## Goal
 
-RunBrake OSS is local-first defensive tooling for OpenClaw installs, skills, plugins, registry snapshots, and policy-plugin adapter events. It should produce useful security evidence without collecting raw prompts, file contents, credentials, email bodies, chat messages, or customer records by default.
+RunBrake OSS is local-first defensive tooling for OpenClaw and Hermes installs, skills, plugins, registry snapshots, and policy-plugin adapter events. It should produce useful security evidence without collecting raw prompts, file contents, credentials, email bodies, chat messages, or customer records by default.
 
 ## Included Surfaces
 
@@ -13,10 +13,14 @@ RunBrake OSS is local-first defensive tooling for OpenClaw installs, skills, plu
 - Public registry scans and report packs
 - SARIF output and GitHub Action support
 - OpenClaw policy-plugin adapter event shaping
+- Hermes policy-plugin adapter event shaping
+- Local sidecar, local policy engine, local install/runtime decisions, local receipts, and local signed audit events
+- Hermes convenience skill workflow
+- Agent-session receipt summaries for supported local adapters
 - Public `RB-*` rule definitions
 - Example fixtures and policies
 
-The local sidecar policy engine is intended to be part of the open-source local runtime surface as it is prepared for public release. Hosted dashboard, team inventory, approval queues, audit retention, private approved catalogs, enterprise integrations, and hosted isolation remain commercial RunBrake control-plane scope.
+The scanner, doctor, registry, watch, and assessment commands work without a local sidecar. Runtime enforcement and in-session receipts are optional local adapter surfaces that pair with the local sidecar when enabled. Hosted dashboard, team inventory, hosted approval queues, retained audit history, private approved catalogs, enterprise integrations, and hosted isolation remain commercial RunBrake control-plane scope.
 
 ## Data Handling Defaults
 
@@ -29,6 +33,7 @@ The local sidecar policy engine is intended to be part of the open-source local 
 | User content         | Not collected by OSS   | Prompt bodies, email bodies, chat transcripts         |
 | Registry scan output | Written by user choice | JSON, Markdown, SARIF, report packs, local archives   |
 | Policy hook metadata | Metadata-first         | Tool name, skill name, redacted argument summaries    |
+| Session receipts     | Local summary only     | Status, policy ID, rule IDs, audit IDs, evidence hash |
 | Dependency evidence  | Metadata-first         | Package ecosystem, name, exact version, advisory ID   |
 
 ## Local Redaction
@@ -64,11 +69,17 @@ The GitHub Action runs the scanner in the user's workflow and can upload SARIF t
 
 ## Registry Scans
 
-Public registry scans read public OpenClaw/ClawHub sources. They do not execute public skills and do not contact third-party services referenced by scanned skills. Reports may include public owner handles, slugs, versions, source URLs, artifact hashes, rule IDs, severities, dependency coordinates, advisory IDs, and redacted evidence.
+Public registry scans read public OpenClaw/ClawHub and Hermes sources. They do not execute public skills and do not contact third-party services referenced by scanned skills. Reports may include public owner handles, slugs, versions, source URLs, source commit SHAs, artifact hashes, rule IDs, severities, dependency coordinates, advisory IDs, and redacted evidence.
 
 ## Policy Plugin Adapter
 
-The OpenClaw policy-plugin adapter uses metadata-first event shapes. Runtime and install hook payloads are converted into contract-shaped records with IDs, tool or package names, destination domains, data classifications, and optional redacted argument summaries. Runtime observations are recorded separately from policy decisions so operators can distinguish "observed tool-call metadata" from "allowed or blocked by policy." Raw package bodies, prompt transcripts, file contents, and unredacted secrets are not part of the default adapter contract.
+The OpenClaw and Hermes policy-plugin adapters use metadata-first event shapes. Runtime and install hook payloads are converted into contract-shaped records with IDs, tool or package names, destination domains, data classifications, and optional redacted argument summaries. Runtime observations are recorded separately from policy decisions so operators can distinguish "observed tool-call metadata" from "allowed or blocked by policy." Raw package bodies, prompt transcripts, file contents, and unredacted secrets are not part of the default adapter contract.
+
+The local sidecar evaluates those records on the user's machine and returns local decisions, receipts, and signed local audit events. It does not upload policy decisions, audit events, prompt text, package bodies, or raw tool arguments to RunBrake by default.
+
+Agent-session receipts are privacy-safe summaries. They may include receipt IDs, surface, ecosystem, status, severity, policy ID, audit event ID, evidence hash, rule IDs, and timestamp. They must not include raw tool arguments, prompt bodies, message bodies, memory contents, file contents, package bodies, or unredacted secrets. Receipt visibility is local and controlled with `RUNBRAKE_RECEIPTS=quiet`, `RUNBRAKE_RECEIPTS=all`, or `RUNBRAKE_RECEIPTS=off`.
+
+Hermes `pre_tool_call` events can block terminal actions only when a local sidecar policy decision says to block. The Hermes convenience skill is an operator workflow for scan/setup commands; it is not a privacy or security boundary.
 
 ## User Controls
 

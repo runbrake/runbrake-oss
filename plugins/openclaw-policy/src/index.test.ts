@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
 import {
+  createStartupReceipt,
   createBeforeInstallHandler,
   createBeforeToolCallHandler,
   decisionToBeforeInstallResult,
@@ -75,6 +76,23 @@ test("OpenClaw policy package has ClawHub publish metadata", async () => {
     additionalProperties: false,
     properties: {},
   });
+});
+
+test("OpenClaw plugin ships a user-invocable RunBrake security skill", async () => {
+  const manifest = JSON.parse(
+    await readFile(new URL("../openclaw.plugin.json", import.meta.url), "utf8"),
+  ) as { skills?: string[] };
+  assert.deepEqual(manifest.skills, ["./skills"]);
+
+  const skill = await readFile(
+    new URL("../skills/runbrake-security/SKILL.md", import.meta.url),
+    "utf8",
+  );
+  assert.match(skill, /^name: runbrake-security/m);
+  assert.match(skill, /^user-invocable: true/m);
+  assert.match(skill, /RunBrake status/i);
+  assert.match(skill, /recent RunBrake receipts/i);
+  assert.match(skill, /runbrake assess --path/m);
 });
 
 test("toToolCallEvent creates a metadata-first event with redacted arguments", () => {
@@ -389,6 +407,58 @@ test("createBeforeInstallHandler maps OpenClaw install events to sidecar blockin
   });
 });
 
+test("createBeforeInstallHandler emits visible install receipts", async () => {
+  const notices: string[] = [];
+  const fetchImpl: FetchLike = async () => ({
+    ok: true,
+    status: 200,
+    text: async () => "",
+    json: async () => ({
+      decision: {
+        id: "decision-install-deny",
+        eventId: "install-tool-call",
+        policyId: "policy-install-critical-finding",
+        action: "deny",
+        decidedAt: "2026-04-28T00:00:10Z",
+        reasons: ["plugin install matched critical rule"],
+        redactions: [],
+        failMode: "closed",
+      },
+      receipt: {
+        id: "receipt-install",
+        eventId: "install-tool-call",
+        surface: "install",
+        ecosystem: "openclaw",
+        status: "blocked",
+        severity: "critical",
+        headline: "RunBrake checked install shell-helper",
+        detail: "plugin install matched critical rule",
+        policyId: "policy-install-critical-finding",
+        ruleIds: [],
+        observedAt: "2026-04-28T00:00:10Z",
+      },
+    }),
+  });
+  const handler = createBeforeInstallHandler({
+    fetchImpl,
+    noticeSink: (notice) => notices.push(notice.message),
+    now: new Date("2026-04-28T00:00:10Z"),
+  });
+
+  await handler(
+    {
+      installId: "install-tool-call",
+      kind: "plugin",
+      name: "shell-helper",
+    },
+    { agentId: "agent-local-dev", sessionId: "session-001" },
+  );
+
+  assert.deepEqual(notices, [
+    "RunBrake checked install shell-helper - blocked - policy-install-critical-finding",
+  ]);
+});
+
 test("createBeforeInstallHandler maps real OpenClaw before_install payloads", async () => {
   const fetchImpl: FetchLike = async (_url, init) => {
     assert.match(init.body, /"kind":"plugin"/);
@@ -504,6 +574,62 @@ test("decisionToBeforeToolCallResult treats shadow and fail-open decisions as no
   );
 });
 
+test("createBeforeToolCallHandler emits visible receipt for shadow decisions", async () => {
+  const notices: string[] = [];
+  const fetchImpl: FetchLike = async (url) => ({
+    ok: true,
+    status: 200,
+    text: async () => "",
+    json: async () =>
+      String(url).endsWith("/v1/runtime/observation")
+        ? { receipt: { id: "receipt-observed", status: "observed" } }
+        : {
+            decision: {
+              id: "decision-shadow",
+              eventId: "event-shell",
+              policyId: "policy-shell-deny",
+              action: "shadow",
+              decidedAt: "2026-04-29T18:00:00Z",
+              reasons: ["shadow mode: would have denied shell execution"],
+              redactions: [],
+              failMode: "open",
+            },
+            receipt: {
+              id: "receipt-shadow",
+              eventId: "event-shell",
+              surface: "runtime",
+              ecosystem: "openclaw",
+              status: "shadowed",
+              severity: "medium",
+              headline: "RunBrake checked shell.exec",
+              detail: "shadow mode: would have denied shell execution",
+              policyId: "policy-shell-deny",
+              ruleIds: [],
+              observedAt: "2026-04-29T18:00:00Z",
+            },
+          },
+  });
+
+  const handler = createBeforeToolCallHandler({
+    fetchImpl,
+    receiptVerbosity: "quiet",
+    noticeSink: (notice) => notices.push(notice.message),
+  });
+
+  await handler(
+    {
+      toolName: "shell.exec",
+      params: { command: "rm -rf /tmp/example" },
+      toolCallId: "event-shell",
+    },
+    { agentId: "agent-local-dev", sessionId: "session-001" },
+  );
+
+  assert.deepEqual(notices, [
+    "RunBrake checked shell.exec - shadowed - policy-shell-deny",
+  ]);
+});
+
 test("createBeforeToolCallHandler maps OpenClaw tool events to sidecar blocking results", async () => {
   const postedURLs: string[] = [];
   const fetchImpl: FetchLike = async (url, init) => {
@@ -617,6 +743,106 @@ test("createBeforeToolCallHandler fails open when runtime observation posting fa
     postedURLs.map((url) => new URL(url).pathname),
     ["/v1/runtime/observation", "/v1/policy/decision"],
   );
+});
+
+test("createStartupReceipt emits first-load active and fail-open notices", async () => {
+  const activeNotices: string[] = [];
+  const activeFetch: FetchLike = async (url, init) => {
+    assert.match(url, /\/healthz$/);
+    assert.equal(init.method, "GET");
+    return {
+      ok: true,
+      status: 200,
+      text: async () => "",
+      json: async () => ({
+        name: "runbrake-sidecar",
+        status: "ok",
+        version: "0.0.0-test",
+      }),
+    };
+  };
+
+  const activeReceipt = await createStartupReceipt({
+    fetchImpl: activeFetch,
+    now: new Date("2026-04-29T18:00:00Z"),
+    noticeSink: (notice) => activeNotices.push(notice.message),
+  });
+
+  assert.equal(activeReceipt.status, "active");
+  assert.deepEqual(activeNotices, ["RunBrake active - active"]);
+
+  const failOpenNotices: string[] = [];
+  const failOpenReceipt = await createStartupReceipt({
+    fetchImpl: async () => {
+      throw new Error("connection refused");
+    },
+    now: new Date("2026-04-29T18:00:01Z"),
+    noticeSink: (notice) => failOpenNotices.push(notice.message),
+  });
+
+  assert.equal(failOpenReceipt.status, "fail_open");
+  assert.deepEqual(failOpenNotices, [
+    "RunBrake not enforcing - fail_open - policy-sidecar-unavailable",
+  ]);
+});
+
+test("receipt verbosity controls ordinary allow and observed receipts", async () => {
+  const quietNotices: string[] = [];
+  const allNotices: string[] = [];
+  const receipt = {
+    id: "receipt-allow",
+    eventId: "event-allow",
+    surface: "runtime",
+    ecosystem: "openclaw",
+    status: "allowed",
+    severity: "info",
+    headline: "RunBrake checked shell.exec",
+    detail: "allowed by default policy",
+    policyId: "policy-default-allow",
+    ruleIds: [],
+    observedAt: "2026-04-29T18:00:00Z",
+  };
+  const fetchImpl: FetchLike = async (url) => ({
+    ok: true,
+    status: 200,
+    text: async () => "",
+    json: async () =>
+      String(url).endsWith("/v1/runtime/observation")
+        ? {
+            receipt: { ...receipt, id: "receipt-observed", status: "observed" },
+          }
+        : {
+            decision: {
+              id: "decision-allow",
+              eventId: "event-allow",
+              policyId: "policy-default-allow",
+              action: "allow",
+              decidedAt: "2026-04-29T18:00:00Z",
+              reasons: ["default allow"],
+              redactions: [],
+              failMode: "open",
+            },
+            receipt,
+          },
+  });
+
+  await createBeforeToolCallHandler({
+    fetchImpl,
+    receiptVerbosity: "quiet",
+    noticeSink: (notice) => quietNotices.push(notice.message),
+  })({ toolName: "shell.exec", toolCallId: "event-allow" }, {});
+
+  await createBeforeToolCallHandler({
+    fetchImpl,
+    receiptVerbosity: "all",
+    noticeSink: (notice) => allNotices.push(notice.message),
+  })({ toolName: "shell.exec", toolCallId: "event-allow" }, {});
+
+  assert.deepEqual(quietNotices, []);
+  assert.deepEqual(allNotices, [
+    "RunBrake checked shell.exec - observed - policy-default-allow",
+    "RunBrake checked shell.exec - allowed - policy-default-allow",
+  ]);
 });
 
 test("default plugin entry registers install and tool-call hooks", async () => {

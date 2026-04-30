@@ -14,6 +14,7 @@ type Result = doctor.Result
 
 type ScanOptions struct {
 	Target               string
+	Ecosystem            string
 	Now                  time.Time
 	ScannerVersion       string
 	HTTPClient           *http.Client

@@ -1,6 +1,6 @@
 {
   "name": "@runbrake/openclaw-policy",
-  "version": "0.1.0",
+  "version": "0.1.2",
   "description": "OpenClaw policy adapter for the local RunBrake sidecar.",
   "private": false,
   "type": "module",
@@ -19,6 +19,7 @@
     "dist/index.js",
     "dist/index.js.map",
     "src",
+    "skills",
     "openclaw.plugin.json",
     "README.md",
     "package.json"

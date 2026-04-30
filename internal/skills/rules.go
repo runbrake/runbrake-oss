@@ -17,6 +17,13 @@ const (
 	RuleVulnerableDependency  = "RB-SKILL-VULNERABLE-DEPENDENCY"
 	RuleSimilarNamePackage    = "RB-SKILL-SIMILAR-NAME-PACKAGE"
 	RulePlaintextSecret       = "RB-SKILL-PLAINTEXT-SECRET"
+	RuleHermesInlineShell     = "RB-HERMES-INLINE-SHELL"
+	RuleHermesRequiredSecret  = "RB-HERMES-REQUIRED-SECRET"
+	RuleHermesTerminal        = "RB-HERMES-TERMINAL-REQUIRED"
+	RuleHermesBrowserOrWeb    = "RB-HERMES-BROWSER-OR-WEB-REQUIRED"
+	RuleHermesGatewayHook     = "RB-HERMES-GATEWAY-HOOK"
+	RuleHermesPreToolHook     = "RB-HERMES-PRE-TOOL-BLOCKING-HOOK"
+	RuleHermesPluginExposure  = "RB-HERMES-PLUGIN-TOOL-EXPOSURE"
 )
 
 func RuleRegistry() []Rule {
@@ -132,6 +139,62 @@ func RuleRegistry() []Rule {
 			Title:             "Skill depends on a package name similar to a popular package",
 			Remediation:       "Verify the package publisher and replace typo-squatted dependencies with the intended package.",
 			RecommendedPolicy: "quarantine",
+		},
+		{
+			ID:                RuleHermesInlineShell,
+			Severity:          doctor.SeverityMedium,
+			Confidence:        0.88,
+			Title:             "Hermes skill uses inline shell",
+			Remediation:       "Review inline shell snippets and require approval for terminal execution in Hermes policy.",
+			RecommendedPolicy: "approval required for terminal",
+		},
+		{
+			ID:                RuleHermesRequiredSecret,
+			Severity:          doctor.SeverityMedium,
+			Confidence:        0.86,
+			Title:             "Hermes artifact requires secret material",
+			Remediation:       "Document required secrets and keep credentials outside skill/plugin source control.",
+			RecommendedPolicy: "approval required for secret access",
+		},
+		{
+			ID:                RuleHermesTerminal,
+			Severity:          doctor.SeverityLow,
+			Confidence:        0.84,
+			Title:             "Hermes artifact requires terminal access",
+			Remediation:       "Review terminal-requiring skills before enabling them in shared Hermes homes.",
+			RecommendedPolicy: "approval required for terminal",
+		},
+		{
+			ID:                RuleHermesBrowserOrWeb,
+			Severity:          doctor.SeverityLow,
+			Confidence:        0.8,
+			Title:             "Hermes artifact requires browser or web access",
+			Remediation:       "Review browser or web tool usage and restrict network destinations where possible.",
+			RecommendedPolicy: "approval required for network egress",
+		},
+		{
+			ID:                RuleHermesGatewayHook,
+			Severity:          doctor.SeverityMedium,
+			Confidence:        0.84,
+			Title:             "Hermes gateway hook is installed",
+			Remediation:       "Review hook handler code and keep hook behavior auditable.",
+			RecommendedPolicy: "inventory",
+		},
+		{
+			ID:                RuleHermesPreToolHook,
+			Severity:          doctor.SeverityInfo,
+			Confidence:        0.82,
+			Title:             "Hermes pre-tool hook can influence tool calls",
+			Remediation:       "Inventory pre_tool_call hooks and pair blocking behavior with reviewed policy code.",
+			RecommendedPolicy: "inventory",
+		},
+		{
+			ID:                RuleHermesPluginExposure,
+			Severity:          doctor.SeverityMedium,
+			Confidence:        0.8,
+			Title:             "Hermes plugin exposes runtime hooks or tools",
+			Remediation:       "Review plugin registration and restrict exposed hooks or tools to least privilege.",
+			RecommendedPolicy: "approval required for plugin runtime",
 		},
 	}
 }

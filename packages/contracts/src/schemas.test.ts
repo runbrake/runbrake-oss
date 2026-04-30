@@ -165,3 +165,44 @@ test("runtime observation schema allows metadata and rejects raw payload fields"
   assert.equal(rejected, false);
   assert.match(ajv.errorsText(validate.errors), /additional properties/);
 });
+
+test("check receipt schema allows safe local status metadata", () => {
+  const ajv = new Ajv2020({ allErrors: true, strict: true });
+  const validate = ajv.compile(contractSchemas.CheckReceipt);
+
+  const valid = validate({
+    id: "receipt-001",
+    eventId: "event-shell",
+    surface: "runtime",
+    ecosystem: "openclaw",
+    status: "blocked",
+    severity: "critical",
+    headline: "RunBrake blocked shell.exec",
+    detail: "policy-shell-deny matched filesystem access",
+    policyId: "policy-shell-deny",
+    auditEventId: "audit-001",
+    evidenceHash:
+      "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+    ruleIds: ["RB-SKILL-SHELL-EXECUTION"],
+    observedAt: "2026-04-29T18:00:00Z",
+  });
+
+  assert.equal(valid, true, ajv.errorsText(validate.errors));
+
+  const rejected = validate({
+    id: "receipt-raw",
+    eventId: "event-shell",
+    surface: "runtime",
+    ecosystem: "hermes",
+    status: "allowed",
+    severity: "info",
+    headline: "RunBrake checked terminal",
+    detail: "allowed",
+    ruleIds: [],
+    observedAt: "2026-04-29T18:00:00Z",
+    arguments: { token: "Bearer ya29.supersecrettokenvalue" },
+  });
+
+  assert.equal(rejected, false);
+  assert.match(ajv.errorsText(validate.errors), /additional properties/);
+});

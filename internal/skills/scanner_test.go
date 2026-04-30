@@ -61,6 +61,154 @@ func TestScanOpenClawSkillMarkdownFormat(t *testing.T) {
 	}
 }
 
+func TestScanHermesSkillEmitsHermesRulesAndGenericRisk(t *testing.T) {
+	result, err := Scan(ScanOptions{
+		Target:         filepath.Join("..", "hermes", "testdata", "home", ".hermes", "skills", "devops", "deploy-k8s"),
+		Ecosystem:      "hermes",
+		Now:            fixedSkillScanTime,
+		ScannerVersion: "test",
+	})
+	if err != nil {
+		t.Fatalf("Scan(hermes skill) error = %v", err)
+	}
+	if len(result.Inventory.Skills) != 1 {
+		t.Fatalf("skill count = %d, want 1", len(result.Inventory.Skills))
+	}
+	artifact := result.Inventory.Skills[0]
+	if artifact.Kind != "skill" {
+		t.Fatalf("artifact kind = %q, want skill", artifact.Kind)
+	}
+	if artifact.Ecosystem != "hermes" {
+		t.Fatalf("artifact ecosystem = %q, want hermes", artifact.Ecosystem)
+	}
+
+	got := findingRuleIDs(result.Report.Findings)
+	for _, want := range []string{
+		"RB-HERMES-INLINE-SHELL",
+		"RB-HERMES-REQUIRED-SECRET",
+		"RB-HERMES-TERMINAL-REQUIRED",
+		"RB-SKILL-REMOTE-SCRIPT-EXECUTION",
+	} {
+		if !slices.Contains(got, want) {
+			t.Fatalf("Hermes skill scan rule IDs = %v, missing %s", got, want)
+		}
+	}
+}
+
+func TestScanHermesPluginAndHookArtifacts(t *testing.T) {
+	pluginResult, err := Scan(ScanOptions{
+		Target:         filepath.Join("..", "hermes", "testdata", "home", ".hermes", "plugins", "runbrake"),
+		Ecosystem:      "hermes",
+		Now:            fixedSkillScanTime,
+		ScannerVersion: "test",
+	})
+	if err != nil {
+		t.Fatalf("Scan(hermes plugin) error = %v", err)
+	}
+	if len(pluginResult.Inventory.Plugins) != 1 {
+		t.Fatalf("plugin count = %d, want 1", len(pluginResult.Inventory.Plugins))
+	}
+	if pluginResult.Inventory.Plugins[0].Ecosystem != "hermes" {
+		t.Fatalf("plugin ecosystem = %q, want hermes", pluginResult.Inventory.Plugins[0].Ecosystem)
+	}
+	pluginRules := findingRuleIDs(pluginResult.Report.Findings)
+	for _, want := range []string{
+		"RB-HERMES-REQUIRED-SECRET",
+		"RB-HERMES-PRE-TOOL-BLOCKING-HOOK",
+	} {
+		if !slices.Contains(pluginRules, want) {
+			t.Fatalf("Hermes plugin scan rule IDs = %v, missing %s", pluginRules, want)
+		}
+	}
+	if slices.Contains(pluginRules, "RB-HERMES-PLUGIN-TOOL-EXPOSURE") {
+		t.Fatalf("pre_tool_call-only plugin should not emit medium plugin exposure: %+v", pluginResult.Report.Findings)
+	}
+
+	hookResult, err := Scan(ScanOptions{
+		Target:         filepath.Join("..", "hermes", "testdata", "home", ".hermes", "hooks", "command-logger"),
+		Ecosystem:      "hermes",
+		Now:            fixedSkillScanTime,
+		ScannerVersion: "test",
+	})
+	if err != nil {
+		t.Fatalf("Scan(hermes hook) error = %v", err)
+	}
+	if len(hookResult.Inventory.Hooks) != 1 {
+		t.Fatalf("hook count = %d, want 1", len(hookResult.Inventory.Hooks))
+	}
+	if hookResult.Inventory.Hooks[0].Ecosystem != "hermes" {
+		t.Fatalf("hook ecosystem = %q, want hermes", hookResult.Inventory.Hooks[0].Ecosystem)
+	}
+	hookRules := findingRuleIDs(hookResult.Report.Findings)
+	for _, want := range []string{
+		"RB-HERMES-PRE-TOOL-BLOCKING-HOOK",
+	} {
+		if !slices.Contains(hookRules, want) {
+			t.Fatalf("Hermes hook scan rule IDs = %v, missing %s", hookRules, want)
+		}
+	}
+	if slices.Contains(hookRules, "RB-HERMES-GATEWAY-HOOK") {
+		t.Fatalf("pre_tool_call-only hook should not emit medium gateway hook: %+v", hookResult.Report.Findings)
+	}
+}
+
+func TestScanHermesPreToolOnlyArtifactsAreInfoInventoryOnly(t *testing.T) {
+	t.Run("plugin", func(t *testing.T) {
+		root := t.TempDir()
+		if err := os.WriteFile(filepath.Join(root, "plugin.yaml"), []byte("name: benign-pretool\nversion: 1.0.0\n"), 0o644); err != nil {
+			t.Fatalf("write plugin.yaml: %v", err)
+		}
+		plugin := `def register(ctx):
+    def pre_tool_call(event):
+        return {"allow": True}
+    ctx.hooks.pre_tool_call(pre_tool_call)
+`
+		if err := os.WriteFile(filepath.Join(root, "__init__.py"), []byte(plugin), 0o644); err != nil {
+			t.Fatalf("write __init__.py: %v", err)
+		}
+
+		result, err := Scan(ScanOptions{
+			Target:         root,
+			Ecosystem:      "hermes",
+			Now:            fixedSkillScanTime,
+			ScannerVersion: "test",
+		})
+		if err != nil {
+			t.Fatalf("Scan(pre_tool plugin) error = %v", err)
+		}
+
+		assertOnlyHermesPreToolInventory(t, result.Report.Findings)
+	})
+
+	t.Run("hook", func(t *testing.T) {
+		root := t.TempDir()
+		hook := `name: benign-command-log
+version: 1.0.0
+events:
+  - pre_tool_call
+handler: handler.py
+`
+		if err := os.WriteFile(filepath.Join(root, "HOOK.yaml"), []byte(hook), 0o644); err != nil {
+			t.Fatalf("write HOOK.yaml: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(root, "handler.py"), []byte("def handle(event):\n    return {\"allow\": True}\n"), 0o644); err != nil {
+			t.Fatalf("write handler.py: %v", err)
+		}
+
+		result, err := Scan(ScanOptions{
+			Target:         root,
+			Ecosystem:      "hermes",
+			Now:            fixedSkillScanTime,
+			ScannerVersion: "test",
+		})
+		if err != nil {
+			t.Fatalf("Scan(pre_tool hook) error = %v", err)
+		}
+
+		assertOnlyHermesPreToolInventory(t, result.Report.Findings)
+	})
+}
+
 func TestScanToleratesRegistryManifestSchemaVariants(t *testing.T) {
 	root := t.TempDir()
 	manifest := []byte(`{
@@ -608,6 +756,21 @@ func findingRuleIDs(findings []Finding) []string {
 		ids = append(ids, finding.RuleID)
 	}
 	return ids
+}
+
+func assertOnlyHermesPreToolInventory(t *testing.T, findings []Finding) {
+	t.Helper()
+
+	if len(findings) != 1 {
+		t.Fatalf("findings = %+v, want only pre_tool_call inventory", findings)
+	}
+	finding := findings[0]
+	if finding.RuleID != "RB-HERMES-PRE-TOOL-BLOCKING-HOOK" {
+		t.Fatalf("rule ID = %s, want RB-HERMES-PRE-TOOL-BLOCKING-HOOK; findings=%+v", finding.RuleID, findings)
+	}
+	if finding.Severity != "info" {
+		t.Fatalf("pre_tool_call severity = %s, want info", finding.Severity)
+	}
 }
 
 func copyDir(t *testing.T, src string, dst string) {

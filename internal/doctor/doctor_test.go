@@ -191,6 +191,56 @@ func TestScanDetectsMissingAgentSkillAllowlist(t *testing.T) {
 	}
 }
 
+func TestScanHermesFixtureDetectsPostureFindings(t *testing.T) {
+	root := filepath.Join("..", "hermes", "testdata", "home", ".hermes")
+
+	result, err := Scan(ScanOptions{
+		Root:           root,
+		Ecosystem:      "hermes",
+		Now:            fixedScanTime,
+		ScannerVersion: "test",
+	})
+	if err != nil {
+		t.Fatalf("Scan(hermes) error = %v", err)
+	}
+
+	got := findingRuleIDs(result.Report.Findings)
+	for _, want := range []string{
+		"RB-HERMES-INLINE-SHELL-ENABLED",
+		"RB-HERMES-EXTERNAL-SKILL-SHADOW",
+		"RB-HERMES-GATEWAY-HOOKS",
+		"RB-HERMES-BROAD-TOOLSET",
+	} {
+		if !slices.Contains(got, want) {
+			t.Fatalf("rule IDs = %v, missing %s; findings=%+v", got, want, result.Report.Findings)
+		}
+	}
+}
+
+func TestScanHermesConfigOnlyHookEmitsGatewayHookFinding(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "config.yaml"), []byte(`hooks:
+  pre_tool_call:
+    - runbrake-policy
+`), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	result, err := Scan(ScanOptions{
+		Root:           root,
+		Ecosystem:      "hermes",
+		Now:            fixedScanTime,
+		ScannerVersion: "test",
+	})
+	if err != nil {
+		t.Fatalf("Scan(hermes config hook) error = %v", err)
+	}
+
+	if !slices.Contains(findingRuleIDs(result.Report.Findings), "RB-HERMES-GATEWAY-HOOKS") {
+		t.Fatalf("config-only hook finding not emitted: %+v", result.Report.Findings)
+	}
+}
+
 func TestDiscoverRootUsesExplicitEnvAndDefaults(t *testing.T) {
 	explicit := fixturePath("safe-local")
 	root, err := DiscoverRoot(DiscoverOptions{

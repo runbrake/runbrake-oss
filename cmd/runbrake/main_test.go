@@ -41,6 +41,92 @@ func TestDoctorCommandScansExplicitPath(t *testing.T) {
 	}
 }
 
+func TestDoctorCommandScansHermesEcosystem(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	code := run(
+		[]string{"doctor", "--ecosystem", "hermes", "--path", filepath.Join("..", "..", "internal", "hermes", "testdata", "home", ".hermes"), "--format", "json"},
+		&stdout,
+		&stderr,
+		map[string]string{},
+		t.TempDir(),
+		fixedNow,
+	)
+
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%s", code, stderr.String())
+	}
+	output := stdout.String()
+	for _, want := range []string{
+		`"ruleId": "RB-HERMES-INLINE-SHELL-ENABLED"`,
+		`"ruleId": "RB-HERMES-EXTERNAL-SKILL-SHADOW"`,
+		`"ruleId": "RB-HERMES-GATEWAY-HOOKS"`,
+		`"ruleId": "RB-HERMES-BROAD-TOOLSET"`,
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("doctor JSON missing %q:\n%s", want, output)
+		}
+	}
+}
+
+func TestDoctorHermesParentWithTopLevelSkillsPrefersNestedHome(t *testing.T) {
+	root := copyHermesFixture(t)
+	copyFixtureDir(t, skillFixturePath("safe-skill"), filepath.Join(root, "skills", "top"))
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	code := run(
+		[]string{"doctor", "--ecosystem", "hermes", "--path", root, "--format", "json"},
+		&stdout,
+		&stderr,
+		map[string]string{},
+		t.TempDir(),
+		fixedNow,
+	)
+
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%s stdout=%s", code, stderr.String(), stdout.String())
+	}
+	output := stdout.String()
+	for _, want := range []string{
+		`"ruleId": "RB-HERMES-INLINE-SHELL-ENABLED"`,
+		`"ruleId": "RB-HERMES-GATEWAY-HOOKS"`,
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("doctor JSON missing nested Hermes config finding %q:\n%s", want, output)
+		}
+	}
+}
+
+func TestHelpShowsHermesDoctorEcosystemFlag(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	code := run(
+		[]string{"help"},
+		&stdout,
+		&stderr,
+		map[string]string{},
+		t.TempDir(),
+		fixedNow,
+	)
+
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%s", code, stderr.String())
+	}
+	output := stdout.String()
+	if !strings.Contains(output, "runbrake doctor [--ecosystem openclaw|hermes] [--path <agent-root>]") {
+		t.Fatalf("help output missing Hermes doctor usage:\n%s", output)
+	}
+	if !strings.Contains(output, "runbrake scan-skill [--ecosystem openclaw|hermes]") {
+		t.Fatalf("help output missing scan-skill ecosystem usage:\n%s", output)
+	}
+	if !strings.Contains(output, "runbrake scan-skills [--ecosystem openclaw|hermes]") {
+		t.Fatalf("help output missing scan-skills ecosystem usage:\n%s", output)
+	}
+}
+
 func TestDoctorCommandImportsOpenClawPluginDiagnostics(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "openclaw.json"), []byte(`{
@@ -99,7 +185,7 @@ esac
 	}
 }
 
-func TestScannerCLIRejectsCommercialSidecarCommand(t *testing.T) {
+func TestSidecarCommandRequiresPolicy(t *testing.T) {
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 
@@ -115,11 +201,33 @@ func TestScannerCLIRejectsCommercialSidecarCommand(t *testing.T) {
 	if code != 2 {
 		t.Fatalf("exit code = %d, want 2; stderr=%s", code, stderr.String())
 	}
-	if !strings.Contains(stderr.String(), `unknown command "sidecar"`) {
-		t.Fatalf("stderr missing unknown command: %s", stderr.String())
+	if !strings.Contains(stderr.String(), "sidecar requires --policy") {
+		t.Fatalf("stderr missing policy requirement: %s", stderr.String())
 	}
-	if strings.Contains(stderr.String(), "runbrake sidecar") {
-		t.Fatalf("scanner usage leaked sidecar command: %s", stderr.String())
+}
+
+func TestSidecarCommandRejectsInvalidPolicyBeforeListen(t *testing.T) {
+	policyPath := filepath.Join(t.TempDir(), "policy.json")
+	if err := os.WriteFile(policyPath, []byte(`{"shadowOnly": true, "rules": []}`), 0o600); err != nil {
+		t.Fatalf("write policy: %v", err)
+	}
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	code := run(
+		[]string{"sidecar", "--policy", policyPath, "--addr", "127.0.0.1:0"},
+		&stdout,
+		&stderr,
+		map[string]string{},
+		t.TempDir(),
+		fixedNow,
+	)
+
+	if code != 2 {
+		t.Fatalf("exit code = %d, want 2; stderr=%s", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "policy version is required") {
+		t.Fatalf("stderr missing invalid policy detail: %s", stderr.String())
 	}
 }
 
@@ -155,77 +263,6 @@ func TestExportReportFormats(t *testing.T) {
 				t.Fatalf("%s export missing %q:\n%s", tt.format, tt.want, stdout.String())
 			}
 		})
-	}
-}
-
-func TestScanSkillLocalOSVEnrichmentFlags(t *testing.T) {
-	osvServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/v1/querybatch":
-			writeTestJSON(t, w, map[string]any{
-				"results": []map[string]any{
-					{"vulns": []map[string]any{{"id": "GHSA-test-lodash"}}},
-				},
-			})
-		case "/v1/vulns/GHSA-test-lodash":
-			writeTestJSON(t, w, map[string]any{
-				"id":      "GHSA-test-lodash",
-				"summary": "Prototype pollution in lodash",
-				"severity": []map[string]string{{
-					"type":  "CVSS_V3",
-					"score": "9.8",
-				}},
-			})
-		default:
-			t.Fatalf("unexpected OSV request %s", r.URL.Path)
-		}
-	}))
-	defer osvServer.Close()
-
-	root := t.TempDir()
-	if err := os.WriteFile(filepath.Join(root, "skill.json"), []byte(`{"name":"local-vulnerable","version":"1.0.0"}`), 0o644); err != nil {
-		t.Fatalf("write skill.json: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(root, "package-lock.json"), []byte(`{
-  "packages": {
-    "": {"dependencies": {"lodash": "4.17.20"}},
-    "node_modules/lodash": {"version": "4.17.20"}
-  }
-}`), 0o644); err != nil {
-		t.Fatalf("write package-lock.json: %v", err)
-	}
-
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-	code := run(
-		[]string{
-			"scan-skill",
-			"--dependency-scan",
-			"--vuln", "osv",
-			"--osv-api-base", osvServer.URL,
-			"--format", "json",
-			root,
-		},
-		&stdout,
-		&stderr,
-		map[string]string{},
-		t.TempDir(),
-		fixedNow,
-	)
-	if code != 1 {
-		t.Fatalf("exit code = %d, want 1 for vulnerable dependency; stderr=%s", code, stderr.String())
-	}
-	output := stdout.String()
-	for _, want := range []string{
-		`"ruleId": "RB-SKILL-VULNERABLE-DEPENDENCY"`,
-		`"dependencies": [`,
-		`"vulnerabilities": [`,
-		`"id": "GHSA-test-lodash"`,
-		`"packageName": "lodash"`,
-	} {
-		if !strings.Contains(output, want) {
-			t.Fatalf("local scan enriched JSON missing %q:\n%s", want, output)
-		}
 	}
 }
 
@@ -318,6 +355,27 @@ func TestScanSkillCommandScansLocalSkill(t *testing.T) {
 	}
 }
 
+func TestScanSkillCommandRejectsUnsupportedEcosystem(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	code := run(
+		[]string{"scan-skill", "--ecosystem", "hermse", skillFixturePath("curl-pipe-sh")},
+		&stdout,
+		&stderr,
+		map[string]string{},
+		t.TempDir(),
+		fixedNow,
+	)
+
+	if code != 2 {
+		t.Fatalf("exit code = %d, want 2; stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stderr.String(), `unsupported scan ecosystem "hermse"; expected openclaw or hermes`) {
+		t.Fatalf("unsupported ecosystem error was not helpful: %s", stderr.String())
+	}
+}
+
 func TestScanSkillExportFormats(t *testing.T) {
 	tests := []struct {
 		format string
@@ -348,6 +406,77 @@ func TestScanSkillExportFormats(t *testing.T) {
 				t.Fatalf("%s scan-skill export missing %q:\n%s", tt.format, tt.want, stdout.String())
 			}
 		})
+	}
+}
+
+func TestScanSkillLocalOSVEnrichmentFlags(t *testing.T) {
+	osvServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/querybatch":
+			writeTestJSON(t, w, map[string]any{
+				"results": []map[string]any{
+					{"vulns": []map[string]any{{"id": "GHSA-test-lodash"}}},
+				},
+			})
+		case "/v1/vulns/GHSA-test-lodash":
+			writeTestJSON(t, w, map[string]any{
+				"id":      "GHSA-test-lodash",
+				"summary": "Prototype pollution in lodash",
+				"severity": []map[string]string{{
+					"type":  "CVSS_V3",
+					"score": "9.8",
+				}},
+			})
+		default:
+			t.Fatalf("unexpected OSV request %s", r.URL.Path)
+		}
+	}))
+	defer osvServer.Close()
+
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "skill.json"), []byte(`{"name":"local-vulnerable","version":"1.0.0"}`), 0o644); err != nil {
+		t.Fatalf("write skill.json: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "package-lock.json"), []byte(`{
+  "packages": {
+    "": {"dependencies": {"lodash": "4.17.20"}},
+    "node_modules/lodash": {"version": "4.17.20"}
+  }
+}`), 0o644); err != nil {
+		t.Fatalf("write package-lock.json: %v", err)
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run(
+		[]string{
+			"scan-skill",
+			"--dependency-scan",
+			"--vuln", "osv",
+			"--osv-api-base", osvServer.URL,
+			"--format", "json",
+			root,
+		},
+		&stdout,
+		&stderr,
+		map[string]string{},
+		t.TempDir(),
+		fixedNow,
+	)
+	if code != 1 {
+		t.Fatalf("exit code = %d, want 1 for vulnerable dependency; stderr=%s", code, stderr.String())
+	}
+	output := stdout.String()
+	for _, want := range []string{
+		`"ruleId": "RB-SKILL-VULNERABLE-DEPENDENCY"`,
+		`"dependencies": [`,
+		`"vulnerabilities": [`,
+		`"id": "GHSA-test-lodash"`,
+		`"packageName": "lodash"`,
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("local scan enriched JSON missing %q:\n%s", want, output)
+		}
 	}
 }
 
@@ -452,6 +581,72 @@ func TestAssessCommandBuildsTesterBundle(t *testing.T) {
 	for _, want := range []string{"# RunBrake Assessment", "Doctor", "Installed Skill Scan", "Watch Changes", "RB-SKILL-REMOTE-SCRIPT-EXECUTION"} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("assess output missing %q:\n%s", want, output)
+		}
+	}
+}
+
+func TestAssessCommandBuildsHermesBundle(t *testing.T) {
+	root := copyHermesFixture(t)
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run(
+		[]string{"assess", "--ecosystem", "hermes", "--path", root, "--state", filepath.Join(root, ".runbrake", "test-state.json"), "--format", "markdown"},
+		&stdout,
+		&stderr,
+		map[string]string{},
+		t.TempDir(),
+		fixedNow,
+	)
+	if code != 1 {
+		t.Fatalf("exit code = %d, want 1 for critical Hermes bundle; stderr=%s stdout=%s", code, stderr.String(), stdout.String())
+	}
+	output := stdout.String()
+	for _, want := range []string{"# RunBrake Hermes Assessment", "Hermes root", "RB-HERMES-INLINE-SHELL-ENABLED", "RB-HERMES-INLINE-SHELL", "Watch Changes"} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("Hermes assess output missing %q:\n%s", want, output)
+		}
+	}
+}
+
+func TestAssessHermesScansExternalSkillsAfterWatchStateIsWarm(t *testing.T) {
+	root := makeHermesHomeWithExternalOnlyCriticalSkill(t)
+	statePath := filepath.Join(t.TempDir(), "watch-state.json")
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run(
+		[]string{"assess", "--ecosystem", "hermes", "--path", root, "--state", statePath, "--format", "markdown"},
+		&stdout,
+		&stderr,
+		map[string]string{},
+		t.TempDir(),
+		fixedNow,
+	)
+	if code != 1 {
+		t.Fatalf("first exit code = %d, want 1 for critical external Hermes skill; stderr=%s stdout=%s", code, stderr.String(), stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "RB-SKILL-REMOTE-SCRIPT-EXECUTION") {
+		t.Fatalf("first assessment missing external critical finding:\n%s", stdout.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code = run(
+		[]string{"assess", "--ecosystem", "hermes", "--path", root, "--state", statePath, "--format", "markdown"},
+		&stdout,
+		&stderr,
+		map[string]string{},
+		t.TempDir(),
+		fixedNow,
+	)
+	if code != 1 {
+		t.Fatalf("second exit code = %d, want 1 from installed external scan even after warm watch state; stderr=%s stdout=%s", code, stderr.String(), stdout.String())
+	}
+	output := stdout.String()
+	for _, want := range []string{"Installed Skills/Plugins/Hooks", "RB-SKILL-REMOTE-SCRIPT-EXECUTION"} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("second assessment output missing %q:\n%s", want, output)
 		}
 	}
 }
@@ -582,6 +777,94 @@ func TestWatchOpenClawCommandDetectsManualCriticalDropOnce(t *testing.T) {
 	}
 }
 
+func TestWatchHermesCommandDetectsManualCriticalDropOnce(t *testing.T) {
+	root := copyHermesFixture(t)
+	statePath := filepath.Join(root, ".runbrake", "watch-state.json")
+	copyFixtureDir(t, skillFixturePath("curl-pipe-sh"), filepath.Join(root, ".hermes", "skills", "risky", "curl-pipe-sh"))
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run(
+		[]string{"watch-hermes", "--path", root, "--state", statePath, "--once", "--format", "json"},
+		&stdout,
+		&stderr,
+		map[string]string{},
+		t.TempDir(),
+		fixedNow,
+	)
+	if code != 1 {
+		t.Fatalf("exit code = %d, want 1 for critical Hermes finding; stderr=%s stdout=%s", code, stderr.String(), stdout.String())
+	}
+	if !strings.Contains(stdout.String(), `"ecosystem": "hermes"`) || !strings.Contains(stdout.String(), "RB-SKILL-REMOTE-SCRIPT-EXECUTION") {
+		t.Fatalf("Hermes watch output missing new critical artifact:\n%s", stdout.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code = run(
+		[]string{"watch-hermes", "--path", root, "--state", statePath, "--once", "--format", "json"},
+		&stdout,
+		&stderr,
+		map[string]string{},
+		t.TempDir(),
+		fixedNow,
+	)
+	if code != 0 {
+		t.Fatalf("second exit code = %d, want 0 after state save; stderr=%s stdout=%s", code, stderr.String(), stdout.String())
+	}
+	if !strings.Contains(stdout.String(), `"changes": []`) {
+		t.Fatalf("second Hermes watch output should have no changes:\n%s", stdout.String())
+	}
+}
+
+func TestWatchHermesParentWithTopLevelSkillsPrefersNestedHome(t *testing.T) {
+	root := copyHermesFixture(t)
+	copyFixtureDir(t, skillFixturePath("safe-skill"), filepath.Join(root, "skills", "top"))
+	statePath := filepath.Join(t.TempDir(), "watch-state.json")
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run(
+		[]string{"watch-hermes", "--path", root, "--state", statePath, "--once", "--format", "json"},
+		&stdout,
+		&stderr,
+		map[string]string{},
+		t.TempDir(),
+		fixedNow,
+	)
+	if code != 1 {
+		t.Fatalf("parent exit code = %d, want 1 for critical fixture finding; stderr=%s stdout=%s", code, stderr.String(), stdout.String())
+	}
+	parentOutput := stdout.String()
+	if !strings.Contains(parentOutput, `"root": "`+filepath.ToSlash(root)+`"`) {
+		t.Fatalf("parent watch root should stay at Hermes parent %q, output:\n%s", root, parentOutput)
+	}
+	if strings.Contains(parentOutput, `"path": "skills/top"`) {
+		t.Fatalf("parent top-level skills should not be watched unless configured as external dirs:\n%s", parentOutput)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code = run(
+		[]string{"watch-hermes", "--path", filepath.Join(root, ".hermes"), "--state", statePath, "--once", "--format", "json"},
+		&stdout,
+		&stderr,
+		map[string]string{},
+		t.TempDir(),
+		fixedNow,
+	)
+	if code != 0 {
+		t.Fatalf("direct exit code = %d, want 0 after shared warm state; stderr=%s stdout=%s", code, stderr.String(), stdout.String())
+	}
+	directOutput := stdout.String()
+	if !strings.Contains(directOutput, `"root": "`+filepath.ToSlash(root)+`"`) {
+		t.Fatalf("direct watch root should canonicalize to Hermes parent %q, output:\n%s", root, directOutput)
+	}
+	if !strings.Contains(directOutput, `"changes": []`) {
+		t.Fatalf("direct watch should reuse parent state and keys:\n%s", directOutput)
+	}
+}
+
 func TestScanSkillCommandScansRemoteZipURL(t *testing.T) {
 	zipBytes := zipSkillFixture(t, skillFixturePath("curl-pipe-sh"))
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -670,6 +953,49 @@ func TestScanRegistryGitHubFormats(t *testing.T) {
 				t.Fatalf("%s registry output missing remote script rule:\n%s", tt.format, output)
 			}
 		})
+	}
+}
+
+func TestScanRegistryHermesGitHubMirror(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	code := run(
+		[]string{
+			"scan-registry",
+			"hermes",
+			"--source", "github",
+			"--mirror-path", registryFixturePath("hermes-repo"),
+			"--dependency-scan",
+			"--fail-on", "none",
+			"--format", "json",
+		},
+		&stdout,
+		&stderr,
+		map[string]string{},
+		t.TempDir(),
+		fixedNow,
+	)
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0 with --fail-on none; stderr=%s", code, stderr.String())
+	}
+	output := stdout.String()
+	for _, want := range []string{
+		`"registry": "hermes"`,
+		`"type": "hermes-github"`,
+		`"discovered": 5`,
+		`"category": "devops"`,
+		`"category": "qa"`,
+		`"bundled": true`,
+		`"bundled": false`,
+		`"sourcePath": "skills/dogfood/SKILL.md"`,
+		`"sourcePath": "optional-skills/security/1password/SKILL.md"`,
+		`"ecosystem": "npm"`,
+		`"ruleId": "RB-HERMES-REQUIRED-SECRET"`,
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("Hermes registry JSON missing %q:\n%s", want, output)
+		}
 	}
 }
 
@@ -1085,6 +1411,7 @@ func TestScanRegistryInvalidInputs(t *testing.T) {
 		{name: "missing registry", args: []string{"scan-registry"}, want: "requires a registry name"},
 		{name: "unsupported registry", args: []string{"scan-registry", "other"}, want: "unsupported registry"},
 		{name: "invalid source", args: []string{"scan-registry", "openclaw", "--source", "rss"}, want: "unsupported registry source"},
+		{name: "hermes clawhub source", args: []string{"scan-registry", "hermes", "--source", "clawhub"}, want: `unsupported registry source "clawhub" for hermes`},
 	}
 
 	for _, tt := range tests {
@@ -1211,6 +1538,31 @@ func skillFixturePath(name string) string {
 
 func registryFixturePath(name string) string {
 	return filepath.Join("..", "..", "internal", "registry", "testdata", name)
+}
+
+func copyHermesFixture(t *testing.T) string {
+	t.Helper()
+	root := t.TempDir()
+	copyFixtureDir(t, filepath.Join("..", "..", "internal", "hermes", "testdata", "home"), root)
+	return root
+}
+
+func makeHermesHomeWithExternalOnlyCriticalSkill(t *testing.T) string {
+	t.Helper()
+	base := t.TempDir()
+	root := filepath.Join(base, "home")
+	hermesHome := filepath.Join(root, ".hermes")
+	if err := os.MkdirAll(hermesHome, 0o755); err != nil {
+		t.Fatalf("mkdir Hermes home: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(hermesHome, "config.yaml"), []byte(`skills:
+  external_dirs:
+    - ../../external-skills
+`), 0o600); err != nil {
+		t.Fatalf("write Hermes config: %v", err)
+	}
+	copyFixtureDir(t, skillFixturePath("curl-pipe-sh"), filepath.Join(base, "external-skills", "risky", "curl-pipe-sh"))
+	return root
 }
 
 func writeTestJSON(t *testing.T, w http.ResponseWriter, value any) {

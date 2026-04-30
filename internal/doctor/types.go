@@ -70,6 +70,7 @@ type Vulnerability struct {
 
 type Artifact struct {
 	Kind           string            `json:"kind"`
+	Ecosystem      string            `json:"ecosystem,omitempty"`
 	Name           string            `json:"name"`
 	Version        string            `json:"version"`
 	Source         string            `json:"source"`
@@ -85,10 +86,12 @@ type Artifact struct {
 type Inventory struct {
 	Skills  []Artifact `json:"skills"`
 	Plugins []Artifact `json:"plugins"`
+	Hooks   []Artifact `json:"hooks,omitempty"`
 }
 
 type Result struct {
 	Root            string     `json:"root"`
+	Ecosystem       string     `json:"ecosystem,omitempty"`
 	OpenClawVersion string     `json:"openClawVersion"`
 	Inventory       Inventory  `json:"inventory"`
 	Report          ScanReport `json:"report"`
@@ -96,6 +99,7 @@ type Result struct {
 
 type ScanOptions struct {
 	Root                string
+	Ecosystem           string
 	Now                 time.Time
 	ScannerVersion      string
 	OpenClawDiagnostics []OpenClawPluginDiagnostic

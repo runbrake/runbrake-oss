@@ -100,6 +100,29 @@ func TestRenderRegistryEcosystemMarkdown(t *testing.T) {
 	}
 }
 
+func TestRenderHermesRegistryEcosystemMarkdown(t *testing.T) {
+	rendered, err := RenderRegistryEcosystemMarkdown(sampleHermesRegistryReport(), RegistryEcosystemReportOptions{
+		TopSkillLimit:     5,
+		ExampleSkillLimit: 5,
+	})
+	if err != nil {
+		t.Fatalf("RenderRegistryEcosystemMarkdown() error = %v", err)
+	}
+
+	for _, want := range []string{
+		"# Hermes Skills Risk Report",
+		"Source: NousResearch/hermes-agent",
+		"Bundled skills scanned",
+		"Optional skills scanned",
+		"Highest-risk Hermes skills",
+		"Reproducibility",
+	} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("Hermes ecosystem markdown missing %q:\n%s", want, rendered)
+		}
+	}
+}
+
 func TestRenderRegistryEcosystemMarkdownSamplesTopRulesBeforeRepeats(t *testing.T) {
 	report := sampleRegistryReport()
 	report.TopRules = []registry.RegistryRuleCount{
@@ -143,6 +166,38 @@ func TestRenderRegistryEcosystemMarkdownSamplesTopRulesBeforeRepeats(t *testing.
 	if !strings.Contains(rendered, "### acme/egress") {
 		t.Fatalf("ecosystem markdown should sample the second top rule before repeating critical findings:\n%s", rendered)
 	}
+}
+
+func sampleHermesRegistryReport() registry.RegistryScanReport {
+	trueValue := true
+	falseValue := false
+	report := sampleRegistryReport()
+	report.Registry = "hermes"
+	report.Source = registry.RegistrySource{
+		Type:   registry.SourceHermesGitHub,
+		URL:    "https://github.com/NousResearch/hermes-agent.git",
+		Commit: "fixture-commit",
+	}
+	report.Summary.Discovered = 4
+	report.Summary.Scanned = 4
+	report.Summary.Clean = 2
+	report.Summary.Risky = 2
+	report.Skills[0].Owner = "devops"
+	report.Skills[0].Slug = "docker-management"
+	report.Skills[0].DisplayName = "Docker Management"
+	report.Skills[0].Category = "devops"
+	report.Skills[0].Bundled = &trueValue
+	report.Skills[0].SourcePath = "skills/devops/docker-management/SKILL.md"
+	report.Skills[1].Owner = "security"
+	report.Skills[1].Slug = "1password"
+	report.Skills[1].DisplayName = "1Password"
+	report.Skills[1].Category = "security"
+	report.Skills[1].Bundled = &falseValue
+	report.Skills[1].SourcePath = "optional-skills/security/1password/SKILL.md"
+	report.HighestRisk[0].Owner = "security"
+	report.HighestRisk[0].Slug = "1password"
+	report.HighestRisk[0].DisplayName = "1Password"
+	return report
 }
 
 func sampleRegistryReport() registry.RegistryScanReport {

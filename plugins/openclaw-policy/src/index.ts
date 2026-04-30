@@ -2,9 +2,11 @@ import { createHash } from "node:crypto";
 
 import type {
   AuditEvent,
+  CheckReceipt,
   InstallEvent,
   PolicyDecision,
   RuntimeObservation,
+  SessionNotice,
   ToolCallEvent,
 } from "@runbrake/contracts";
 
@@ -87,17 +89,19 @@ export type RuntimeObservationOptions = {
 export type SidecarDecisionResponse = {
   decision: PolicyDecision;
   auditEvent?: AuditEvent;
+  receipt?: CheckReceipt;
 };
 
 export type SidecarRuntimeObservationResponse = {
   observation?: RuntimeObservation;
   auditEvent?: AuditEvent;
+  receipt?: CheckReceipt;
 };
 
 export type FetchLike = (
   url: string,
   init: {
-    method: "POST";
+    method: "GET" | "POST";
     headers: Record<string, string>;
     body: string;
   },
@@ -112,6 +116,17 @@ export type SidecarClientOptions = {
   sidecarUrl?: string;
   fetchImpl?: FetchLike;
   now?: Date;
+};
+
+export type ReceiptVerbosity = "off" | "quiet" | "all";
+
+export type SessionNoticeSink = (
+  notice: SessionNotice,
+) => unknown | Promise<unknown>;
+
+export type ReceiptOptions = {
+  receiptVerbosity?: ReceiptVerbosity;
+  noticeSink?: SessionNoticeSink;
 };
 
 export type OpenClawBeforeToolCallEvent = {
@@ -236,12 +251,12 @@ export type BeforeToolCallHandlerOptions = SidecarClientOptions &
     payloadClassifications?: string[];
     priority?: number;
     recordRuntimeObservations?: boolean;
-  };
+  } & ReceiptOptions;
 
 export type BeforeInstallHandlerOptions = SidecarClientOptions &
   InstallEventOptions & {
     priority?: number;
-  };
+  } & ReceiptOptions;
 
 const DEFAULT_SIDECAR_URL = "http://127.0.0.1:47838";
 const DEFAULT_ARGUMENT_LENGTH = 512;
@@ -531,6 +546,53 @@ export async function requestRuntimeObservation(
   }
 }
 
+export async function createStartupReceipt(
+  options: SidecarClientOptions & ReceiptOptions = {},
+): Promise<CheckReceipt> {
+  const fetchImpl = options.fetchImpl ?? globalThis.fetch;
+  const observedAt = (options.now ?? new Date()).toISOString();
+  let receipt: CheckReceipt;
+
+  if (!fetchImpl) {
+    receipt = startupReceipt("fail_open", observedAt, "fetch is unavailable");
+    await emitReceiptNotice(receipt, options);
+    return receipt;
+  }
+
+  try {
+    const response = await fetchImpl(
+      `${options.sidecarUrl ?? DEFAULT_SIDECAR_URL}/healthz`,
+      {
+        method: "GET",
+        headers: { accept: "application/json" },
+        body: "",
+      },
+    );
+    if (!response.ok) {
+      receipt = startupReceipt(
+        "fail_open",
+        observedAt,
+        `sidecar returned HTTP ${response.status}: ${await response.text()}`,
+      );
+    } else {
+      receipt = startupReceipt(
+        "active",
+        observedAt,
+        "sidecar connected - policy checks visible in this session",
+      );
+    }
+  } catch (error) {
+    receipt = startupReceipt(
+      "fail_open",
+      observedAt,
+      `sidecar unavailable: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+
+  await emitReceiptNotice(receipt, options);
+  return receipt;
+}
+
 export function decisionToBeforeToolCallResult(
   decision: PolicyDecision,
 ): BeforeToolCallResult | undefined {
@@ -589,7 +651,7 @@ export function createBeforeToolCallHandler(
       options,
     );
     if (options.recordRuntimeObservations !== false) {
-      await requestRuntimeObservation(
+      const observationResponse = await requestRuntimeObservation(
         toRuntimeObservation(
           {
             id: toolCallEvent.id,
@@ -609,8 +671,10 @@ export function createBeforeToolCallHandler(
         ),
         options,
       );
+      await emitReceiptNotice(observationResponse?.receipt, options);
     }
     const response = await requestPolicyDecision(toolCallEvent, options);
+    await emitReceiptNotice(response.receipt, options);
     return decisionToBeforeToolCallResult(response.decision);
   };
 }
@@ -629,6 +693,7 @@ export function createBeforeInstallHandler(
         "openclaw-user",
     });
     const response = await requestInstallDecision(installEvent, options);
+    await emitReceiptNotice(response.receipt, options);
     return decisionToBeforeInstallResult(response.decision);
   };
 }
@@ -656,6 +721,116 @@ export const runbrakeOpenClawPolicyPlugin = {
 };
 
 export default runbrakeOpenClawPolicyPlugin;
+
+async function emitReceiptNotice(
+  receipt: CheckReceipt | undefined,
+  options: ReceiptOptions,
+): Promise<void> {
+  if (!receipt || !options.noticeSink || !shouldEmitReceipt(receipt, options)) {
+    return;
+  }
+  await options.noticeSink(receiptToNotice(receipt));
+}
+
+function shouldEmitReceipt(
+  receipt: CheckReceipt,
+  options: ReceiptOptions,
+): boolean {
+  const verbosity = options.receiptVerbosity ?? "quiet";
+  if (verbosity === "off") {
+    return false;
+  }
+  if (verbosity === "all") {
+    return true;
+  }
+  if (receipt.surface === "startup") {
+    return true;
+  }
+  return (
+    receipt.status === "shadowed" ||
+    receipt.status === "redacted" ||
+    receipt.status === "approval_required" ||
+    receipt.status === "blocked" ||
+    receipt.status === "quarantined" ||
+    receipt.status === "kill_switch" ||
+    receipt.status === "fail_open"
+  );
+}
+
+function receiptToNotice(receipt: CheckReceipt): SessionNotice {
+  const policySuffix = receipt.policyId ? ` - ${receipt.policyId}` : "";
+  return {
+    id: stableEventId(["notice", receipt.id, receipt.status]),
+    receiptId: receipt.id,
+    channel: "agent_session",
+    level: noticeLevel(receipt),
+    message: `${receipt.headline} - ${receipt.status}${policySuffix}`,
+  };
+}
+
+function noticeLevel(receipt: CheckReceipt): SessionNotice["level"] {
+  if (
+    receipt.severity === "critical" ||
+    receipt.status === "blocked" ||
+    receipt.status === "quarantined" ||
+    receipt.status === "kill_switch"
+  ) {
+    return "critical";
+  }
+  if (
+    receipt.severity === "high" ||
+    receipt.severity === "medium" ||
+    receipt.status === "shadowed" ||
+    receipt.status === "approval_required" ||
+    receipt.status === "fail_open"
+  ) {
+    return "warning";
+  }
+  return "info";
+}
+
+function startupReceipt(
+  status: "active" | "fail_open",
+  observedAt: string,
+  detail: string,
+): CheckReceipt {
+  return {
+    id: stableEventId(["receipt", "startup", status, observedAt]),
+    eventId: `startup-${observedAt}`,
+    surface: "startup",
+    ecosystem: "openclaw",
+    status,
+    severity: status === "active" ? "info" : "high",
+    headline:
+      status === "active" ? "RunBrake active" : "RunBrake not enforcing",
+    detail,
+    policyId: status === "fail_open" ? "policy-sidecar-unavailable" : undefined,
+    ruleIds: [],
+    observedAt,
+  };
+}
+
+function failOpenReceipt(
+  eventId: string,
+  surface: "install" | "runtime",
+  subject: string,
+  observedAt: string,
+  detail: string,
+): CheckReceipt {
+  return {
+    id: stableEventId(["receipt", surface, eventId, "fail_open", observedAt]),
+    eventId,
+    surface,
+    ecosystem: "openclaw",
+    status: "fail_open",
+    severity: "high",
+    headline: `RunBrake not enforcing ${subject}`,
+    detail,
+    policyId: "policy-sidecar-unavailable",
+    ruleIds: [],
+    observedAt,
+  };
+}
 
 function summarizeArguments(
   args: Record<string, unknown>,
@@ -709,17 +884,25 @@ function failOpenDecision(
   decidedAt: string,
   reason: string,
 ): SidecarDecisionResponse {
+  const decision: PolicyDecision = {
+    id: `decision-fail-open-${event.id}`,
+    eventId: event.id,
+    policyId: "policy-sidecar-unavailable",
+    action: "shadow",
+    decidedAt,
+    reasons: [reason, "fail-open shadow decision returned locally"],
+    redactions: [],
+    failMode: "open",
+  };
   return {
-    decision: {
-      id: `decision-fail-open-${event.id}`,
-      eventId: event.id,
-      policyId: "policy-sidecar-unavailable",
-      action: "shadow",
+    decision,
+    receipt: failOpenReceipt(
+      event.id,
+      "runtime",
+      event.tool,
       decidedAt,
-      reasons: [reason, "fail-open shadow decision returned locally"],
-      redactions: [],
-      failMode: "open",
-    },
+      reason,
+    ),
   };
 }
 
@@ -728,17 +911,25 @@ function failOpenInstallDecision(
   decidedAt: string,
   reason: string,
 ): SidecarDecisionResponse {
+  const decision: PolicyDecision = {
+    id: `decision-fail-open-${event.id}`,
+    eventId: event.id,
+    policyId: "policy-sidecar-unavailable",
+    action: "shadow",
+    decidedAt,
+    reasons: [reason, "fail-open install shadow decision returned locally"],
+    redactions: [],
+    failMode: "open",
+  };
   return {
-    decision: {
-      id: `decision-fail-open-${event.id}`,
-      eventId: event.id,
-      policyId: "policy-sidecar-unavailable",
-      action: "shadow",
+    decision,
+    receipt: failOpenReceipt(
+      event.id,
+      "install",
+      event.name ?? event.source ?? event.id,
       decidedAt,
-      reasons: [reason, "fail-open install shadow decision returned locally"],
-      redactions: [],
-      failMode: "open",
-    },
+      reason,
+    ),
   };
 }
 

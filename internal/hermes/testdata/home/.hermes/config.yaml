@@ -1,0 +1,6 @@
+skills:
+  inline_shell: true
+  external_dirs:
+    - ../../shared-skills
+toolsets:
+  - hermes-cli

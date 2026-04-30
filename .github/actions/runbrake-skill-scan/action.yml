@@ -7,9 +7,9 @@ inputs:
     required: false
     default: .
   version:
-    description: RunBrake binary release version to install, for example v0.1.1.
+    description: RunBrake binary release version to install, for example v0.1.2.
     required: false
-    default: v0.1.1
+    default: v0.1.2
   release-base-url:
     description: Base URL for public RunBrake binary-only releases.
     required: false

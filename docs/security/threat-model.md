@@ -2,28 +2,30 @@
 
 ## Security Goal
 
-RunBrake OSS reduces the blast radius of OpenClaw deployments by discovering risky local installs, scoring skills and plugins before trust, producing redacted evidence, and shaping metadata-first policy events for local enforcement surfaces.
+RunBrake OSS reduces the blast radius of OpenClaw and Hermes deployments by discovering risky local installs, scoring skills and plugins before trust, producing redacted evidence, and enforcing local metadata-first policy decisions through the local sidecar.
 
 RunBrake OSS does not claim guaranteed protection. A finding means an artifact needs review before trust; it is not proof of malicious intent.
 
 ## Trust Boundaries
 
-| Boundary                    | Trusted Side             | Untrusted Or Less-Trusted Side                       | Main Risk                                                         |
-| --------------------------- | ------------------------ | ---------------------------------------------------- | ----------------------------------------------------------------- |
-| Local CLI to file system    | RunBrake scanner binary  | OpenClaw configs, skills, logs, and local user files | Malicious local artifacts attempt parser abuse or secret exposure |
-| Scanner to remote package   | Bounded scanner intake   | User-provided remote ZIP or manifest                 | Archive traversal, oversized input, symlink abuse, parser abuse   |
-| Registry scanner to public  | RunBrake registry client | Public OpenClaw/ClawHub source and metadata          | Evidence poisoning, malformed manifests, rate-limit failures      |
-| Plugin adapter to local API | Metadata-first adapter   | OpenClaw runtime and install hook payloads           | Raw prompts, tool args, or package bodies leak into decisions     |
-| CI action to repository     | GitHub runner workflow   | Pull-request skill/plugin contents                   | Untrusted package content poisons SARIF or workflow output        |
+| Boundary                    | Trusted Side             | Untrusted Or Less-Trusted Side                                     | Main Risk                                                         |
+| --------------------------- | ------------------------ | ------------------------------------------------------------------ | ----------------------------------------------------------------- |
+| Local CLI to file system    | RunBrake scanner binary  | OpenClaw and Hermes configs, skills, plugins, and local user files | Malicious local artifacts attempt parser abuse or secret exposure |
+| Scanner to remote package   | Bounded scanner intake   | User-provided remote ZIP or manifest                               | Archive traversal, oversized input, symlink abuse, parser abuse   |
+| Registry scanner to public  | RunBrake registry client | Public OpenClaw/ClawHub and Hermes source metadata                 | Evidence poisoning, malformed manifests, rate-limit failures      |
+| Plugin adapter to local API | Metadata-first adapter   | OpenClaw and Hermes runtime hook payloads                          | Raw prompts, tool args, or package bodies leak into decisions     |
+| Local sidecar               | Local policy engine      | Adapter runtime/install events                                     | Policy bypass, secret leakage, or local availability failure      |
+| CI action to repository     | GitHub runner workflow   | Pull-request skill/plugin contents                                 | Untrusted package content poisons SARIF or workflow output        |
 
 ## Assets
 
-- Local OpenClaw configuration and install posture.
+- Local OpenClaw and Hermes configuration and install posture.
 - Skill and plugin source packages.
 - Artifact hashes and manifest metadata.
 - Scanner findings, severities, evidence, and remediation text.
 - SARIF, Markdown, JSON, and report-pack outputs.
 - Policy hook metadata and redacted argument summaries.
+- Local policy decisions, local receipts, and local signed audit events.
 - Release binaries, checksums, and provenance metadata.
 
 ## Local Doctor
@@ -44,7 +46,7 @@ Risk: the scanner reads untrusted local and remote packages before installation.
 
 Controls:
 
-- Parse OpenClaw `SKILL.md`/`skill.md`, `skill.json`, `plugin.json`, and package metadata.
+- Parse OpenClaw and Hermes `SKILL.md`/`skill.md`, `skill.json`, `plugin.json`, `plugin.yaml`, hook metadata, and package metadata.
 - Bound remote downloads, extracted content, archive file count, and relevant-file reads.
 - Reject absolute paths, parent-directory traversal, and symlink entries during ZIP extraction.
 - Reject local relevant-file symlinks instead of following them.
@@ -54,6 +56,7 @@ Controls:
 - Detect dynamically constructed or decoded egress destinations as review evidence.
 - Extract exact dependency coordinates from npm, PyPI, Go, and Cargo manifests and lockfiles, including `pnpm-lock.yaml`, `yarn.lock`, `poetry.lock`, `uv.lock`, `Pipfile.lock`, and `go.sum`.
 - Match local dependency coordinates against OSV advisory data when `--dependency-scan --vuln osv` is enabled. Advisory matches are dependency risk evidence, not malware verdicts.
+- Treat Hermes-specific findings such as terminal requirements, required secrets, inline shell, and plugin hooks as review evidence, not proof of maliciousness.
 
 ## Public Registry Scanner
 
@@ -67,19 +70,36 @@ Controls:
 - Honor ClawHub rate limits and `Retry-After`.
 - Use stable public source URLs instead of leaking temporary local filesystem paths.
 - Compare saved reports with `diff-scan-report` for scheduled monitoring.
+- Pin Hermes ecosystem reports to a `NousResearch/hermes-agent` commit so totals are reproducible.
 
 ## Policy Plugin Adapter
 
-Risk: the OpenClaw policy-plugin adapter could leak raw prompts, tool arguments, OAuth tokens, file contents, or package bodies to a local decision service.
+Risk: the OpenClaw or Hermes policy-plugin adapter could leak raw prompts, tool arguments, OAuth tokens, file contents, or package bodies to a local decision service.
 
 Controls:
 
 - Convert hooks into metadata-first `ToolCallEvent` and `InstallEvent` records.
 - Post optional metadata-only `RuntimeObservation` records before policy decisions when paired with a local RunBrake sidecar.
+- Emit privacy-safe session receipt summaries for startup, install, runtime, watcher, and fail-open outcomes.
 - Redact and truncate argument summaries.
 - Reject raw payload fields in shared contract tests.
 - Fail open locally when the sidecar is unavailable instead of uploading fallback data.
 - Treat local sidecar policy enforcement as an explicit operator-controlled local runtime surface.
+- For Hermes, block terminal actions only when `pre_tool_call` receives a local sidecar blocking decision.
+- Treat OpenClaw and Hermes `runbrake-security` skills as setup and status guidance, not security boundaries.
+
+## Local Sidecar
+
+Risk: the local sidecar could become a local policy bypass point or leak raw runtime/install evidence if it accepted unsafe payloads.
+
+Controls:
+
+- Bind to localhost by default.
+- Expose only health, policy decision, install decision, and runtime observation endpoints.
+- Keep event contracts metadata-first and reject unknown raw payload fields.
+- Redact and truncate argument summaries before policy evaluation and receipt rendering.
+- Return local receipts and signed local audit events without uploading to hosted RunBrake services.
+- Fail open through adapters when the sidecar is unavailable so agents are not bricked by a missing local process.
 
 ## OpenClaw Native Posture Checks
 
@@ -106,14 +126,14 @@ Controls:
 
 ## Required Security Tests
 
-| Surface          | Required Test                                                                                           |
-| ---------------- | ------------------------------------------------------------------------------------------------------- |
-| Local doctor     | Secret fixtures are redacted in every output format                                                     |
-| Skill scanner    | Malicious fixtures for shell, hidden Unicode, broad OAuth, remote scripts, and dependency scripts alert |
-| Remote packages  | Oversized archives, traversal paths, and symlink entries are rejected                                   |
-| Registry scanner | Public source metadata is preserved and secret-like evidence is redacted                                |
-| Plugin adapter   | Raw payload fields are rejected and sidecar-unavailable behavior fails open                             |
-| Export tooling   | Private packages and commercial control-plane references do not appear in the public repo export        |
+| Surface          | Required Test                                                                                            |
+| ---------------- | -------------------------------------------------------------------------------------------------------- |
+| Local doctor     | Secret fixtures are redacted in every output format                                                      |
+| Skill scanner    | Malicious fixtures for shell, hidden Unicode, broad OAuth, remote scripts, and dependency scripts alert  |
+| Remote packages  | Oversized archives, traversal paths, and symlink entries are rejected                                    |
+| Registry scanner | Public source metadata is preserved and secret-like evidence is redacted                                 |
+| Plugin adapter   | Raw payload fields are rejected, receipts omit raw payloads, and sidecar-unavailable behavior fails open |
+| Export tooling   | Private packages and commercial control-plane references do not appear in the public repo export         |
 
 ## Disclosure Language
 

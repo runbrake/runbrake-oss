@@ -15,10 +15,14 @@ import (
 	"strings"
 	"time"
 
+	"github.com/runbrake/runbrake-oss/internal/audit"
 	"github.com/runbrake/runbrake-oss/internal/config"
 	"github.com/runbrake/runbrake-oss/internal/doctor"
+	"github.com/runbrake/runbrake-oss/internal/hermes"
+	"github.com/runbrake/runbrake-oss/internal/policy"
 	"github.com/runbrake/runbrake-oss/internal/registry"
 	"github.com/runbrake/runbrake-oss/internal/report"
+	"github.com/runbrake/runbrake-oss/internal/sidecar"
 	"github.com/runbrake/runbrake-oss/internal/skills"
 	watchpkg "github.com/runbrake/runbrake-oss/internal/watch"
 )
@@ -63,6 +67,8 @@ func run(args []string, stdout io.Writer, stderr io.Writer, env map[string]strin
 		return runAssess(args[1:], stdout, stderr, env, homeDir, now)
 	case "watch-openclaw":
 		return runWatchOpenClaw(args[1:], stdout, stderr, env, homeDir, now)
+	case "watch-hermes":
+		return runWatchHermes(args[1:], stdout, stderr, env, homeDir, now)
 	case "scan-registry":
 		return runRegistryScan(args[1:], stdout, stderr, now)
 	case "summarize-registry-report":
@@ -71,6 +77,8 @@ func run(args []string, stdout io.Writer, stderr io.Writer, env map[string]strin
 		return runRegistryReportPack(args[1:], stdout, stderr)
 	case "diff-scan-report":
 		return runDiffScanReport(args[1:], stdout, stderr)
+	case "sidecar":
+		return runSidecar(args[1:], stdout, stderr)
 	case "help", "-h", "--help":
 		printUsage(stdout)
 		return 0
@@ -153,14 +161,119 @@ func runWatchOpenClaw(args []string, stdout io.Writer, stderr io.Writer, env map
 	return 0
 }
 
+func runWatchHermes(args []string, stdout io.Writer, stderr io.Writer, env map[string]string, homeDir string, now time.Time) int {
+	flags := flag.NewFlagSet("watch-hermes", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	path := flags.String("path", "", "Hermes home or parent path")
+	statePath := flags.String("state", "", "watch state file path")
+	once := flags.Bool("once", false, "run one deterministic watch scan and exit")
+	format := flags.String("format", "console", "report format: console or json")
+	var allowDomains multiStringFlag
+	flags.Var(&allowDomains, "allow-domain", "additional allowed egress domain; may be repeated")
+	egressProfile := flags.String("egress-profile", "balanced", "egress profile: balanced or audit")
+	suppressionsPath := flags.String("suppressions", "", "JSON suppression file with reason and optional expiry")
+	if err := flags.Parse(args); err != nil {
+		return 2
+	}
+	if flags.NArg() != 0 {
+		fmt.Fprintf(stderr, "watch-hermes received unexpected arguments: %s\n", strings.Join(flags.Args(), " "))
+		return 2
+	}
+	if !*once {
+		fmt.Fprintln(stderr, "watch-hermes currently requires --once")
+		return 2
+	}
+
+	root, err := resolveHermesWatchRoot(*path, env, homeDir)
+	if err != nil {
+		fmt.Fprintf(stderr, "watch-hermes failed: %v\n", err)
+		return 2
+	}
+	suppressions, err := loadSuppressionsFile(*suppressionsPath)
+	if err != nil {
+		fmt.Fprintf(stderr, "load suppressions: %v\n", err)
+		return 2
+	}
+	result, err := watchpkg.Scan(watchpkg.ScanOptions{
+		Root:           root,
+		Ecosystem:      "hermes",
+		StatePath:      *statePath,
+		WriteState:     true,
+		ScannerVersion: version,
+		Now:            now,
+		AllowDomains:   append([]string(nil), allowDomains...),
+		EgressProfile:  *egressProfile,
+		Suppressions:   suppressions,
+	})
+	if err != nil {
+		fmt.Fprintf(stderr, "watch-hermes failed: %v\n", err)
+		return 2
+	}
+	rendered, err := renderWatchFormat(*format, result)
+	if err != nil {
+		fmt.Fprintf(stderr, "%v\n", err)
+		return 2
+	}
+	if _, err := io.WriteString(stdout, rendered); err != nil {
+		fmt.Fprintf(stderr, "write watch output: %v\n", err)
+		return 2
+	}
+	if result.HasCriticalRisk() {
+		return 1
+	}
+	return 0
+}
+
+func runSidecar(args []string, stdout io.Writer, stderr io.Writer) int {
+	flags := flag.NewFlagSet("sidecar", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	policyPath := flags.String("policy", "", "JSON policy file path")
+	addr := flags.String("addr", config.DefaultSidecarAddress, "local sidecar listen address")
+	auditKey := flags.String("audit-key", "", "local audit signing key")
+	if err := flags.Parse(args); err != nil {
+		return 2
+	}
+	if flags.NArg() != 0 {
+		fmt.Fprintf(stderr, "sidecar received unexpected arguments: %s\n", strings.Join(flags.Args(), " "))
+		return 2
+	}
+	if strings.TrimSpace(*policyPath) == "" {
+		fmt.Fprintln(stderr, "sidecar requires --policy <policy.json>")
+		return 2
+	}
+
+	payload, err := os.ReadFile(*policyPath)
+	if err != nil {
+		fmt.Fprintf(stderr, "read policy: %v\n", err)
+		return 2
+	}
+	policySet, err := policy.Parse(payload)
+	if err != nil {
+		fmt.Fprintf(stderr, "parse policy: %v\n", err)
+		return 2
+	}
+
+	fmt.Fprintf(stderr, "runbrake sidecar listening on %s with shadowOnly=%t\n", *addr, policySet.ShadowOnly)
+	if err := sidecar.Serve(*addr, sidecar.HandlerOptions{
+		Version: version,
+		Policy:  policySet,
+		Signer:  audit.NewSigner(*auditKey),
+	}); err != nil {
+		fmt.Fprintf(stderr, "sidecar failed: %v\n", err)
+		return 2
+	}
+	_, _ = fmt.Fprintln(stdout, "sidecar stopped")
+	return 0
+}
+
 func runRegistryScan(args []string, stdout io.Writer, stderr io.Writer, now time.Time) int {
 	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
 		fmt.Fprintln(stderr, "scan-registry requires a registry name")
 		return 2
 	}
 	registryName := strings.ToLower(strings.TrimSpace(args[0]))
-	if registryName != "openclaw" {
-		fmt.Fprintf(stderr, "unsupported registry %q; only openclaw is supported\n", args[0])
+	if registryName != "openclaw" && registryName != "hermes" {
+		fmt.Fprintf(stderr, "unsupported registry %q; expected openclaw or hermes\n", args[0])
 		return 2
 	}
 
@@ -210,12 +323,20 @@ func runRegistryScan(args []string, stdout io.Writer, stderr io.Writer, now time
 		fmt.Fprintf(stderr, "load suppressions: %v\n", suppressionsErr)
 		return 2
 	}
+	sourceURL := *repo
+	if registryName == "hermes" && sourceURL == registry.DefaultOpenClawSkillsRepo {
+		sourceURL = registry.DefaultHermesAgentRepo
+	}
+	localWorkDir := *workDir
+	if registryName == "hermes" && localWorkDir == filepath.Join(".cache", "runbrake", "registries", "openclaw-skills") {
+		localWorkDir = filepath.Join(".cache", "runbrake", "registries", "hermes-agent")
+	}
 
 	options := registry.ScanOptions{
 		Registry:              registryName,
 		MirrorPath:            *mirrorPath,
-		SourceURL:             *repo,
-		WorkDir:               *workDir,
+		SourceURL:             sourceURL,
+		WorkDir:               localWorkDir,
 		APIBase:               *apiBase,
 		Limit:                 *limit,
 		Slugs:                 splitCSV(*slugs),
@@ -245,8 +366,16 @@ func runRegistryScan(args []string, stdout io.Writer, stderr io.Writer, now time
 	var result registry.RegistryScanReport
 	switch strings.ToLower(strings.TrimSpace(*source)) {
 	case string(registry.SourceGitHub):
-		result, err = registry.ScanGitHub(options)
+		if registryName == "hermes" {
+			result, err = registry.ScanHermes(options)
+		} else {
+			result, err = registry.ScanGitHub(options)
+		}
 	case string(registry.SourceClawHub):
+		if registryName == "hermes" {
+			fmt.Fprintln(stderr, "unsupported registry source \"clawhub\" for hermes; use github")
+			return 2
+		}
 		result, err = registry.ScanClawHubAPI(options)
 	default:
 		fmt.Fprintf(stderr, "unsupported registry source %q\n", *source)
@@ -289,7 +418,8 @@ func runRegistryScan(args []string, stdout io.Writer, stderr io.Writer, now time
 func runAssess(args []string, stdout io.Writer, stderr io.Writer, env map[string]string, homeDir string, now time.Time) int {
 	flags := flag.NewFlagSet("assess", flag.ContinueOnError)
 	flags.SetOutput(stderr)
-	path := flags.String("path", "", "OpenClaw install path")
+	ecosystem := flags.String("ecosystem", "openclaw", "agent ecosystem: openclaw or hermes")
+	path := flags.String("path", "", "agent install path")
 	statePath := flags.String("state", "", "watch state file path")
 	format := flags.String("format", "markdown", "assessment format: markdown or json")
 	output := flags.String("output", "", "write assessment to file")
@@ -304,11 +434,12 @@ func runAssess(args []string, stdout io.Writer, stderr io.Writer, env map[string
 		fmt.Fprintf(stderr, "assess received unexpected arguments: %s\n", strings.Join(flags.Args(), " "))
 		return 2
 	}
-	root, err := doctor.DiscoverRoot(doctor.DiscoverOptions{
-		ExplicitPath: *path,
-		Env:          env,
-		HomeDir:      homeDir,
-	})
+	assessEcosystem, ecosystemErr := normalizeAssessEcosystem(*ecosystem)
+	if ecosystemErr != nil {
+		fmt.Fprintf(stderr, "%v\n", ecosystemErr)
+		return 2
+	}
+	root, err := resolveAssessmentRoot(*path, assessEcosystem, env, homeDir)
 	if err != nil {
 		fmt.Fprintf(stderr, "assess failed: %v\n", err)
 		return 2
@@ -318,8 +449,17 @@ func runAssess(args []string, stdout io.Writer, stderr io.Writer, env map[string
 		fmt.Fprintf(stderr, "load suppressions: %v\n", suppressionsErr)
 		return 2
 	}
+	doctorRoot := root
+	if assessEcosystem == "hermes" {
+		doctorRoot, err = resolveHermesHomePath(root)
+		if err != nil {
+			fmt.Fprintf(stderr, "assess failed: %v\n", err)
+			return 2
+		}
+	}
 	doctorResult, err := doctor.Scan(doctor.ScanOptions{
-		Root:           root,
+		Root:           doctorRoot,
+		Ecosystem:      assessEcosystem,
 		Now:            now,
 		ScannerVersion: version,
 	})
@@ -327,8 +467,9 @@ func runAssess(args []string, stdout io.Writer, stderr io.Writer, env map[string
 		fmt.Fprintf(stderr, "assess doctor failed: %v\n", err)
 		return 2
 	}
-	skillResult, err := skills.ScanMany(skills.ScanOptions{
+	skillResult, err := scanInstalledArtifacts(skills.ScanOptions{
 		Target:         root,
+		Ecosystem:      assessEcosystem,
 		Now:            now,
 		ScannerVersion: version,
 		AllowDomains:   append([]string(nil), allowDomains...),
@@ -345,6 +486,7 @@ func runAssess(args []string, stdout io.Writer, stderr io.Writer, env map[string
 	}
 	watchResult, err := watchpkg.Scan(watchpkg.ScanOptions{
 		Root:           root,
+		Ecosystem:      assessEcosystem,
 		StatePath:      *statePath,
 		WriteState:     true,
 		ScannerVersion: version,
@@ -359,6 +501,7 @@ func runAssess(args []string, stdout io.Writer, stderr io.Writer, env map[string
 	}
 	bundle := assessmentBundle{
 		GeneratedAt: now.UTC().Format(time.RFC3339),
+		Ecosystem:   assessEcosystem,
 		Root:        root,
 		Doctor:      doctorResult.Report,
 		Skills:      skillResult.Report,
@@ -429,7 +572,7 @@ func runSummarizeRegistryReport(args []string, stdout io.Writer, stderr io.Write
 	input := flags.String("input", "", "registry JSON report path")
 	format := flags.String("format", "markdown", "summary format: markdown")
 	output := flags.String("output", "", "write summary to file")
-	title := flags.String("title", "OpenClaw Public Skills Risk Report", "Markdown report title")
+	title := flags.String("title", "", "Markdown report title")
 	topSkills := flags.Int("top-skills", 25, "maximum highest-risk skills to include")
 	examples := flags.Int("examples", 25, "maximum evidence samples to include")
 	if err := flags.Parse(args); err != nil {
@@ -483,7 +626,7 @@ func runRegistryReportPack(args []string, stdout io.Writer, stderr io.Writer) in
 	flags.SetOutput(stderr)
 	input := flags.String("input", "", "registry JSON report path")
 	outputDir := flags.String("output-dir", "", "directory for generated report pack")
-	title := flags.String("title", "OpenClaw Public Skills Risk Report", "Markdown report title")
+	title := flags.String("title", "", "Markdown report title")
 	topSkills := flags.Int("top-skills", 25, "maximum highest-risk skills to include")
 	examples := flags.Int("examples", 25, "maximum evidence samples to include")
 	archiveDir := flags.String("archive-dir", defaultRegistryArchiveDir, "also save registry report pack under this repo directory; use none to disable")
@@ -548,6 +691,7 @@ func runSkillScan(args []string, stdout io.Writer, stderr io.Writer, now time.Ti
 	flags.SetOutput(stderr)
 	format := flags.String("format", "console", "report format: console, markdown, json, sarif")
 	output := flags.String("output", "", "write report to file")
+	ecosystem := flags.String("ecosystem", "", "skill ecosystem: openclaw or hermes")
 	var allowDomains multiStringFlag
 	flags.Var(&allowDomains, "allow-domain", "additional allowed egress domain; may be repeated")
 	egressProfile := flags.String("egress-profile", "balanced", "egress profile: balanced or audit")
@@ -565,6 +709,12 @@ func runSkillScan(args []string, stdout io.Writer, stderr io.Writer, now time.Ti
 		return 2
 	}
 
+	scanEcosystem, ecosystemErr := normalizeScanEcosystem(*ecosystem)
+	if ecosystemErr != nil {
+		fmt.Fprintf(stderr, "%v\n", ecosystemErr)
+		return 2
+	}
+
 	if flags.NArg() != 1 {
 		fmt.Fprintf(stderr, "%s requires %s\n", command, targetLabel)
 		return 2
@@ -578,6 +728,7 @@ func runSkillScan(args []string, stdout io.Writer, stderr io.Writer, now time.Ti
 
 	options := skills.ScanOptions{
 		Target:               flags.Arg(0),
+		Ecosystem:            scanEcosystem,
 		Now:                  now,
 		ScannerVersion:       version,
 		Timeout:              *timeout,
@@ -645,6 +796,90 @@ func runSkillScan(args []string, stdout io.Writer, stderr io.Writer, now time.Ti
 	return 0
 }
 
+func normalizeScanEcosystem(value string) (string, error) {
+	ecosystem := strings.ToLower(strings.TrimSpace(value))
+	switch ecosystem {
+	case "", "openclaw", "hermes":
+		return ecosystem, nil
+	default:
+		return "", fmt.Errorf("unsupported scan ecosystem %q; expected openclaw or hermes", value)
+	}
+}
+
+func normalizeAssessEcosystem(value string) (string, error) {
+	ecosystem := strings.ToLower(strings.TrimSpace(value))
+	if ecosystem == "" {
+		return "openclaw", nil
+	}
+	switch ecosystem {
+	case "openclaw", "hermes":
+		return ecosystem, nil
+	default:
+		return "", fmt.Errorf("unsupported assess ecosystem %q; expected openclaw or hermes", value)
+	}
+}
+
+func resolveAssessmentRoot(path string, ecosystem string, env map[string]string, homeDir string) (string, error) {
+	if ecosystem == "hermes" {
+		return resolveHermesWatchRoot(path, env, homeDir)
+	}
+	return doctor.DiscoverRoot(doctor.DiscoverOptions{
+		ExplicitPath: path,
+		Env:          env,
+		HomeDir:      homeDir,
+	})
+}
+
+func resolveHermesWatchRoot(path string, env map[string]string, homeDir string) (string, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		discovery, err := hermes.Discover(hermes.DiscoverOptions{
+			Env:     env,
+			HomeDir: homeDir,
+		})
+		if err != nil {
+			return "", err
+		}
+		return discovery.HomeDir, nil
+	}
+	if _, err := os.Stat(path); err != nil {
+		return "", err
+	}
+	if filepath.Base(path) != ".hermes" {
+		nested := filepath.Join(path, ".hermes")
+		if _, err := os.Stat(nested); err == nil {
+			if _, err := hermes.Discover(hermes.DiscoverOptions{ExplicitPath: nested}); err == nil {
+				return path, nil
+			}
+		}
+	}
+	if _, err := hermes.Discover(hermes.DiscoverOptions{ExplicitPath: path}); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+func resolveHermesHomePath(root string) (string, error) {
+	root = strings.TrimSpace(root)
+	if root == "" {
+		return "", fmt.Errorf("Hermes root is required")
+	}
+	if filepath.Base(root) != ".hermes" {
+		nested := filepath.Join(root, ".hermes")
+		if _, err := os.Stat(nested); err == nil {
+			discovery, err := hermes.Discover(hermes.DiscoverOptions{ExplicitPath: nested})
+			if err == nil {
+				return discovery.HomeDir, nil
+			}
+		}
+	}
+	discovery, err := hermes.Discover(hermes.DiscoverOptions{ExplicitPath: root})
+	if err != nil {
+		return "", err
+	}
+	return discovery.HomeDir, nil
+}
+
 func applyLocalEnrichment(result *skills.Result, enriched registry.RegistryScanReport) {
 	for _, skill := range enriched.Skills {
 		for _, dependency := range skill.Dependencies {
@@ -678,6 +913,67 @@ func applyLocalEnrichment(result *skills.Result, enriched registry.RegistryScanR
 		}
 	}
 	result.Report.Summary = summarizeFindings(result.Report.Findings)
+}
+
+func scanInstalledArtifacts(options skills.ScanOptions) (skills.Result, error) {
+	if strings.EqualFold(strings.TrimSpace(options.Ecosystem), "hermes") {
+		return scanHermesInstalledArtifacts(options)
+	}
+	return skills.ScanMany(options)
+}
+
+func scanHermesInstalledArtifacts(options skills.ScanOptions) (skills.Result, error) {
+	targets, err := watchpkg.ArtifactTargets(options.Target, "hermes")
+	if err != nil {
+		return skills.Result{}, err
+	}
+	now := options.Now
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	result := skills.Result{
+		Root:      options.Target,
+		Ecosystem: "hermes",
+		Report: doctor.ScanReport{
+			ID:             "skill-scan-" + shortTextHash(strings.Join(targets, "|")+"|"+now.UTC().Format(time.RFC3339)),
+			AgentID:        "skill-scan",
+			ScannerVersion: firstNonEmpty(options.ScannerVersion, version),
+			GeneratedAt:    now.UTC().Format(time.RFC3339),
+			Findings:       []doctor.Finding{},
+			ArtifactHashes: []string{},
+		},
+	}
+	for _, target := range targets {
+		scanOptions := options
+		scanOptions.Target = target
+		scanOptions.Ecosystem = "hermes"
+		scan, err := skills.Scan(scanOptions)
+		if err != nil {
+			return skills.Result{}, err
+		}
+		result.Inventory.Skills = append(result.Inventory.Skills, scan.Inventory.Skills...)
+		result.Inventory.Plugins = append(result.Inventory.Plugins, scan.Inventory.Plugins...)
+		result.Inventory.Hooks = append(result.Inventory.Hooks, scan.Inventory.Hooks...)
+		result.Report.ArtifactHashes = append(result.Report.ArtifactHashes, scan.Report.ArtifactHashes...)
+		result.Report.Findings = append(result.Report.Findings, scan.Report.Findings...)
+	}
+	result.Report.ArtifactHashes = uniqueStrings(result.Report.ArtifactHashes)
+	result.Report.Summary = summarizeFindings(result.Report.Findings)
+	return result, nil
+}
+
+func uniqueStrings(values []string) []string {
+	seen := map[string]bool{}
+	out := []string{}
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" || seen[value] {
+			continue
+		}
+		seen[value] = true
+		out = append(out, value)
+	}
+	return out
 }
 
 func vulnerabilityFinding(skill registry.RegistrySkillResult, vulnerability registry.RegistryVulnerability) doctor.Finding {
@@ -761,7 +1057,8 @@ func firstNonEmpty(values ...string) string {
 func runDoctor(args []string, stdout io.Writer, stderr io.Writer, env map[string]string, homeDir string, now time.Time) int {
 	flags := flag.NewFlagSet("doctor", flag.ContinueOnError)
 	flags.SetOutput(stderr)
-	path := flags.String("path", "", "OpenClaw install path")
+	ecosystem := flags.String("ecosystem", "openclaw", "agent ecosystem: openclaw or hermes")
+	path := flags.String("path", "", "agent install path")
 	openClawBin := flags.String("openclaw-bin", "", "optional OpenClaw binary for plugins list/inspect/doctor JSON diagnostics")
 	format := flags.String("format", "console", "report format: console, markdown, json, sarif")
 	output := flags.String("output", "", "write report to file")
@@ -769,7 +1066,7 @@ func runDoctor(args []string, stdout io.Writer, stderr io.Writer, env map[string
 		return 2
 	}
 
-	result, err := scanInstall(*path, env, homeDir, now, *openClawBin)
+	result, err := scanInstall(*path, *ecosystem, env, homeDir, now, *openClawBin)
 	if err != nil {
 		fmt.Fprintf(stderr, "doctor failed: %v\n", err)
 		return 2
@@ -807,7 +1104,7 @@ func runExportReport(args []string, stdout io.Writer, stderr io.Writer, env map[
 		return 2
 	}
 
-	result, err := scanInstall(*path, env, homeDir, now, "")
+	result, err := scanInstall(*path, "openclaw", env, homeDir, now, "")
 	if err != nil {
 		fmt.Fprintf(stderr, "export-report failed: %v\n", err)
 		return 2
@@ -826,7 +1123,31 @@ func runExportReport(args []string, stdout io.Writer, stderr io.Writer, env map[
 	return 0
 }
 
-func scanInstall(path string, env map[string]string, homeDir string, now time.Time, openClawBin string) (doctor.Result, error) {
+func scanInstall(path string, ecosystem string, env map[string]string, homeDir string, now time.Time, openClawBin string) (doctor.Result, error) {
+	ecosystem = strings.ToLower(strings.TrimSpace(ecosystem))
+	if ecosystem == "" {
+		ecosystem = "openclaw"
+	}
+	if ecosystem == "hermes" {
+		root, err := resolveAssessmentRoot(path, "hermes", env, homeDir)
+		if err != nil {
+			return doctor.Result{}, err
+		}
+		hermesHome, err := resolveHermesHomePath(root)
+		if err != nil {
+			return doctor.Result{}, err
+		}
+		return doctor.Scan(doctor.ScanOptions{
+			Root:           hermesHome,
+			Ecosystem:      "hermes",
+			Now:            now,
+			ScannerVersion: version,
+		})
+	}
+	if ecosystem != "openclaw" {
+		return doctor.Result{}, fmt.Errorf("unsupported doctor ecosystem %q", ecosystem)
+	}
+
 	root, err := doctor.DiscoverRoot(doctor.DiscoverOptions{
 		ExplicitPath: path,
 		Env:          env,
@@ -916,7 +1237,7 @@ func collectOpenClawDiagnostics(openClawBin string) ([]doctor.OpenClawPluginDiag
 }
 
 func runOpenClawJSON(openClawBin string, out any, args ...string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, openClawBin, args...)
 	payload, err := cmd.Output()
@@ -961,6 +1282,7 @@ func renderRegistryFormat(format string, result registry.RegistryScanReport) (st
 }
 
 func renderWatchFormat(format string, result watchpkg.Result) (string, error) {
+	label := ecosystemLabel(result.Ecosystem)
 	switch strings.ToLower(strings.TrimSpace(format)) {
 	case "json":
 		payload, err := json.MarshalIndent(result, "", "  ")
@@ -970,11 +1292,11 @@ func renderWatchFormat(format string, result watchpkg.Result) (string, error) {
 		return string(append(payload, '\n')), nil
 	case "console", "summary", "text":
 		var b strings.Builder
-		fmt.Fprintln(&b, "RunBrake OpenClaw Watch")
+		fmt.Fprintf(&b, "RunBrake %s Watch\n", label)
 		fmt.Fprintf(&b, "Root: %s\n", result.Root)
 		fmt.Fprintf(&b, "State: %s\n", result.StatePath)
 		if len(result.Changes) == 0 {
-			fmt.Fprintln(&b, "No new or changed OpenClaw skills/plugins detected.")
+			fmt.Fprintf(&b, "No new or changed %s skills/plugins/hooks detected.\n", label)
 			return b.String(), nil
 		}
 		for _, change := range result.Changes {
@@ -1000,6 +1322,7 @@ func renderWatchFormat(format string, result watchpkg.Result) (string, error) {
 }
 
 func renderAssessmentFormat(format string, bundle assessmentBundle) (string, error) {
+	label := ecosystemLabel(bundle.Ecosystem)
 	switch strings.ToLower(strings.TrimSpace(format)) {
 	case "json":
 		payload, err := json.MarshalIndent(bundle, "", "  ")
@@ -1009,15 +1332,19 @@ func renderAssessmentFormat(format string, bundle assessmentBundle) (string, err
 		return string(payload) + "\n", nil
 	case "markdown", "md":
 		var b strings.Builder
-		fmt.Fprintln(&b, "# RunBrake Assessment")
-		fmt.Fprintf(&b, "\n- OpenClaw root: `%s`\n", bundle.Root)
+		if strings.EqualFold(bundle.Ecosystem, "hermes") {
+			fmt.Fprintln(&b, "# RunBrake Hermes Assessment")
+		} else {
+			fmt.Fprintln(&b, "# RunBrake Assessment")
+		}
+		fmt.Fprintf(&b, "\n- %s root: `%s`\n", label, bundle.Root)
 		fmt.Fprintf(&b, "- Generated at: `%s`\n\n", bundle.GeneratedAt)
 		renderAssessmentReportSummary(&b, "Doctor", bundle.Doctor)
-		renderAssessmentReportSummary(&b, "Installed Skill Scan", bundle.Skills)
+		renderAssessmentReportSummary(&b, installedScanTitle(bundle.Ecosystem), bundle.Skills)
 		fmt.Fprintln(&b, "## Watch Changes")
 		fmt.Fprintln(&b)
 		if len(bundle.Watch.Changes) == 0 {
-			fmt.Fprintln(&b, "No new or changed OpenClaw skill/plugin folders detected.")
+			fmt.Fprintf(&b, "No new or changed %s skill/plugin/hook folders detected.\n", label)
 			fmt.Fprintln(&b)
 		} else {
 			for _, change := range bundle.Watch.Changes {
@@ -1052,6 +1379,13 @@ func renderAssessmentReportSummary(b *strings.Builder, title string, scan doctor
 		fmt.Fprintf(b, "- `%s` %s %s\n", finding.RuleID, finding.Severity, finding.Title)
 	}
 	fmt.Fprintln(b)
+}
+
+func installedScanTitle(ecosystem string) string {
+	if strings.EqualFold(strings.TrimSpace(ecosystem), "hermes") {
+		return "Installed Skills/Plugins/Hooks"
+	}
+	return "Installed Skill Scan"
 }
 
 func renderDiffFormat(format string, diff report.ScanReportDiff) (string, error) {
@@ -1312,10 +1646,20 @@ func emptySkillScanResult(root string, now time.Time) skills.Result {
 
 type assessmentBundle struct {
 	GeneratedAt string            `json:"generatedAt"`
+	Ecosystem   string            `json:"ecosystem"`
 	Root        string            `json:"root"`
 	Doctor      doctor.ScanReport `json:"doctor"`
 	Skills      doctor.ScanReport `json:"skills"`
 	Watch       watchpkg.Result   `json:"watch"`
+}
+
+func ecosystemLabel(ecosystem string) string {
+	switch strings.ToLower(strings.TrimSpace(ecosystem)) {
+	case "hermes":
+		return "Hermes"
+	default:
+		return "OpenClaw"
+	}
 }
 
 type multiStringFlag []string
@@ -1408,16 +1752,18 @@ func flattenRegistryScanReport(registryReport registry.RegistryScanReport) docto
 
 func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "Usage:")
-	fmt.Fprintln(w, "  runbrake assess [--path <openclaw-root>] [--format markdown|json] [--output <file>]")
-	fmt.Fprintln(w, "  runbrake doctor [--path <openclaw-root>] [--openclaw-bin <path>] [--format console|markdown|json|sarif] [--output <file>]")
+	fmt.Fprintln(w, "  runbrake assess [--ecosystem openclaw|hermes] [--path <agent-root>] [--format markdown|json] [--output <file>]")
+	fmt.Fprintln(w, "  runbrake doctor [--ecosystem openclaw|hermes] [--path <agent-root>] [--format console|markdown|json|sarif] [--output <file>]")
 	fmt.Fprintln(w, "  runbrake export-report --format markdown|json|sarif [--path <openclaw-root>] [--output <file>]")
-	fmt.Fprintln(w, "  runbrake scan-skill [--format console|markdown|json|sarif] [--allow-domain <domain>] [--egress-profile balanced|audit] [--suppressions <file>] [--dependency-scan] [--vuln none|osv] [--cache-dir <dir>] [--output <file>] <skill-path-or-url>")
-	fmt.Fprintln(w, "  runbrake scan-skills [--format console|markdown|json|sarif] [--allow-domain <domain>] [--egress-profile balanced|audit] [--suppressions <file>] [--dependency-scan] [--vuln none|osv] [--cache-dir <dir>] [--output <file>] <skills-directory>")
+	fmt.Fprintln(w, "  runbrake scan-skill [--ecosystem openclaw|hermes] [--format console|markdown|json|sarif] [--allow-domain <domain>] [--egress-profile balanced|audit] [--suppressions <file>] [--output <file>] <skill-path-or-url>")
+	fmt.Fprintln(w, "  runbrake scan-skills [--ecosystem openclaw|hermes] [--format console|markdown|json|sarif] [--allow-domain <domain>] [--egress-profile balanced|audit] [--suppressions <file>] [--output <file>] <skills-directory>")
 	fmt.Fprintln(w, "  runbrake watch-openclaw --once [--path <openclaw-root>] [--state <file>] [--format console|json]")
-	fmt.Fprintln(w, "  runbrake scan-registry openclaw [--source github|clawhub] [--limit <n>] [--workers <n>] [--dependency-scan] [--vuln none|osv] [--cache-dir <dir>] [--progress] [--fail-on none|low|medium|high|critical] [--slugs <slug,...>] [--format summary|json|sarif] [--output <file>] [--archive-dir <dir|none>]")
+	fmt.Fprintln(w, "  runbrake watch-hermes --once [--path <hermes-home-or-parent>] [--state <file>] [--format console|json]")
+	fmt.Fprintln(w, "  runbrake scan-registry openclaw|hermes [--source github|clawhub] [--limit <n>] [--workers <n>] [--dependency-scan] [--vuln none|osv] [--cache-dir <dir>] [--progress] [--fail-on none|low|medium|high|critical] [--slugs <slug,...>] [--format summary|json|sarif] [--output <file>] [--archive-dir <dir|none>]")
 	fmt.Fprintln(w, "  runbrake summarize-registry-report --input <registry-json> [--output <file>] [--top-skills <n>] [--examples <n>]")
 	fmt.Fprintln(w, "  runbrake registry-report-pack --input <registry-json> --output-dir <dir> [--archive-dir <dir|none>] [--top-skills <n>] [--examples <n>]")
 	fmt.Fprintln(w, "  runbrake diff-scan-report --baseline <json> --current <json> [--format markdown|json] [--output <file>]")
+	fmt.Fprintln(w, "  runbrake sidecar --policy <policy.json> [--addr 127.0.0.1:47838] [--audit-key <key>]")
 }
 
 func osEnviron() map[string]string {

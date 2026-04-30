@@ -103,8 +103,9 @@ func RenderRegistrySummary(result registry.RegistryScanReport) (string, error) {
 func RenderRegistryEcosystemMarkdown(result registry.RegistryScanReport, options RegistryEcosystemReportOptions) (string, error) {
 	title := strings.TrimSpace(options.Title)
 	if title == "" {
-		title = "OpenClaw Public Skills Risk Report"
+		title = registryReportTitle(result)
 	}
+	labels := registryReportLabels(result)
 	topSkillLimit := options.TopSkillLimit
 	if topSkillLimit <= 0 {
 		topSkillLimit = 25
@@ -117,10 +118,12 @@ func RenderRegistryEcosystemMarkdown(result registry.RegistryScanReport, options
 	var b strings.Builder
 	fmt.Fprintf(&b, "# %s\n\n", title)
 	fmt.Fprintf(&b, "Generated from RunBrake registry scan `%s` on `%s`.\n\n", result.ID, result.GeneratedAt)
+	fmt.Fprintf(&b, "Source: %s\n\n", registrySourceDisplay(result.Source))
 
 	fmt.Fprintf(&b, "## Executive Summary\n\n")
-	fmt.Fprintf(&b, "RunBrake scanned `%d` public `%s` skills from `%s`. The scan found `%d` risky skills, `%d` clean skills, and `%d` scan errors.\n\n",
+	fmt.Fprintf(&b, "RunBrake scanned `%d` %s `%s` skills from `%s`. The scan found `%d` risky skills, `%d` clean skills, and `%d` scan errors.\n\n",
 		result.Summary.Scanned,
+		labels.Visibility,
 		valueOrUnknown(result.Registry),
 		registrySourceLabel(result.Source),
 		result.Summary.Risky,
@@ -141,6 +144,11 @@ func RenderRegistryEcosystemMarkdown(result registry.RegistryScanReport, options
 		result.Summary.Low,
 		result.Summary.Info,
 	)
+	if isHermesRegistry(result) {
+		bundled, optional := hermesBundleCounts(result)
+		fmt.Fprintf(&b, "- Bundled skills scanned: `%d`\n", bundled)
+		fmt.Fprintf(&b, "- Optional skills scanned: `%d`\n\n", optional)
+	}
 
 	fmt.Fprintf(&b, "## Top Risk Signals\n\n")
 	if len(result.TopRules) == 0 {
@@ -194,7 +202,7 @@ func RenderRegistryEcosystemMarkdown(result registry.RegistryScanReport, options
 		}
 	}
 
-	fmt.Fprintf(&b, "## Highest-Risk Skills\n\n")
+	fmt.Fprintf(&b, "## %s\n\n", labels.HighestRiskHeading)
 	if len(result.HighestRisk) == 0 {
 		fmt.Fprintf(&b, "No risky skills were ranked in this scan.\n\n")
 	} else {
@@ -244,13 +252,59 @@ func RenderRegistryEcosystemMarkdown(result registry.RegistryScanReport, options
 	fmt.Fprintf(&b, "## Methodology And Caveats\n\n")
 	fmt.Fprintf(&b, "This report is static source analysis, not a malware verdict. Findings are risk signals that should be reviewed with skill intent, version history, and runtime behavior. Dependency vulnerability matches come from advisory data and are not malware verdicts. Evidence is locally redacted before export. Exit code `1` means high or critical findings were detected; exit code `2` means the command failed.\n\n")
 
-	fmt.Fprintf(&b, "## Reproduce\n\n")
+	fmt.Fprintf(&b, "## %s\n\n", labels.ReproduceHeading)
 	fmt.Fprintf(&b, "- Registry: `%s`\n", result.Registry)
 	fmt.Fprintf(&b, "- Source: `%s`\n", registrySourceLabel(result.Source))
 	fmt.Fprintf(&b, "- Scanner version: `%s`\n", result.ScannerVersion)
 	fmt.Fprintf(&b, "- Generated at: `%s`\n", result.GeneratedAt)
 
 	return b.String(), nil
+}
+
+type registryReportCopy struct {
+	Visibility         string
+	HighestRiskHeading string
+	ReproduceHeading   string
+}
+
+func registryReportTitle(result registry.RegistryScanReport) string {
+	if isHermesRegistry(result) {
+		return "Hermes Skills Risk Report"
+	}
+	return "OpenClaw Public Skills Risk Report"
+}
+
+func registryReportLabels(result registry.RegistryScanReport) registryReportCopy {
+	if isHermesRegistry(result) {
+		return registryReportCopy{
+			Visibility:         "Hermes",
+			HighestRiskHeading: "Highest-risk Hermes skills",
+			ReproduceHeading:   "Reproducibility",
+		}
+	}
+	return registryReportCopy{
+		Visibility:         "public",
+		HighestRiskHeading: "Highest-Risk Skills",
+		ReproduceHeading:   "Reproduce",
+	}
+}
+
+func isHermesRegistry(result registry.RegistryScanReport) bool {
+	return strings.EqualFold(strings.TrimSpace(result.Registry), "hermes") || result.Source.Type == registry.SourceHermesGitHub
+}
+
+func hermesBundleCounts(result registry.RegistryScanReport) (bundled int, optional int) {
+	for _, skill := range result.Skills {
+		if skill.Bundled == nil {
+			continue
+		}
+		if *skill.Bundled {
+			bundled++
+		} else {
+			optional++
+		}
+	}
+	return bundled, optional
 }
 
 func RenderRegistryJSON(result registry.RegistryScanReport) (string, error) {
@@ -357,6 +411,18 @@ func RenderRegistrySARIF(result registry.RegistryScanReport) (string, error) {
 
 func registrySourceLabel(source registry.RegistrySource) string {
 	switch source.Type {
+	case registry.SourceHermesGitHub:
+		label := string(source.Type)
+		if display := registrySourceDisplay(source); display != "" {
+			label += " " + display
+		}
+		if source.Commit != "" {
+			label += " @ " + source.Commit
+		}
+		if source.MirrorPath != "" {
+			label += " (" + source.MirrorPath + ")"
+		}
+		return label
 	case registry.SourceGitHub:
 		label := string(source.Type)
 		if source.URL != "" {
@@ -378,6 +444,35 @@ func registrySourceLabel(source registry.RegistrySource) string {
 	default:
 		return string(source.Type)
 	}
+}
+
+func registrySourceDisplay(source registry.RegistrySource) string {
+	switch source.Type {
+	case registry.SourceHermesGitHub:
+		if shorthand := githubRepoShorthand(source.URL); shorthand != "" {
+			return shorthand
+		}
+		return "NousResearch/hermes-agent"
+	default:
+		return registrySourceLabel(source)
+	}
+}
+
+func githubRepoShorthand(rawURL string) string {
+	rawURL = strings.TrimSpace(rawURL)
+	if rawURL == "" {
+		return ""
+	}
+	rawURL = strings.TrimSuffix(rawURL, ".git")
+	rawURL = strings.TrimSuffix(rawURL, "/")
+	const githubPrefix = "https://github.com/"
+	if strings.HasPrefix(rawURL, githubPrefix) {
+		return strings.TrimPrefix(rawURL, githubPrefix)
+	}
+	if strings.HasPrefix(rawURL, "git@github.com:") {
+		return strings.TrimPrefix(rawURL, "git@github.com:")
+	}
+	return rawURL
 }
 
 func registrySkillLabel(owner string, slug string, displayName string) string {

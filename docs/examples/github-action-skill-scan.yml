@@ -10,8 +10,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: runbrake/skill-scan-action@v0
+      - uses: runbrake/runbrake-oss/.github/actions/runbrake-skill-scan@v0.1.2
         with:
           path: .
-          version: v0.1.1
+          version: v0.1.2
           upload-sarif: "true"

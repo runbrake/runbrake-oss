@@ -3,7 +3,7 @@ set -euo pipefail
 
 version="${1:-}"
 if [[ -z "$version" ]]; then
-  echo "usage: scripts/build-release-artifacts.sh v0.1.1" >&2
+  echo "usage: scripts/build-release-artifacts.sh v0.1.2" >&2
   exit 2
 fi
 

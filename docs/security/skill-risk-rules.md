@@ -1,6 +1,6 @@
 # RunBrake Skill Risk Rules
 
-Phase 2 skill scans emit stable `RB-SKILL-*` rule IDs. Rule IDs are part of the local report contract and should not be renamed once released.
+Scanner releases emit stable `RB-SKILL-*` rule IDs. Rule IDs are part of the local report contract and should not be renamed once released.
 
 | Rule ID                             | Severity | Detection Summary                                                                                              | Recommended Policy                   |
 | ----------------------------------- | -------- | -------------------------------------------------------------------------------------------------------------- | ------------------------------------ |
@@ -18,5 +18,11 @@ Phase 2 skill scans emit stable `RB-SKILL-*` rule IDs. Rule IDs are part of the 
 | `RB-SKILL-CONSTRUCTED-EGRESS`       | Medium   | Skill source or scripts dynamically assemble or decode network destinations.                                   | Approval required for network egress |
 | `RB-SKILL-VULNERABLE-DEPENDENCY`    | High     | Local dependency or lockfile coordinates match OSV advisory data.                                              | Quarantine                           |
 | `RB-SKILL-SIMILAR-NAME-PACKAGE`     | Medium   | Dependencies are within a small edit distance of common package names, indicating typosquat risk.              | Quarantine                           |
+| `RB-HERMES-INLINE-SHELL`            | Medium   | Hermes skill metadata or content declares inline shell snippets.                                               | Approval required for terminal       |
+| `RB-HERMES-PLUGIN-HOOK`             | High     | Hermes plugin registers runtime hooks such as `pre_tool_call`.                                                 | Review plugin hook policy            |
+| `RB-HERMES-TERMINAL-REQUIRED`       | Low      | Hermes skill or plugin declares required terminal access.                                                      | Approval required for terminal       |
+| `RB-HERMES-REQUIRED-SECRET`         | Medium   | Hermes skill or plugin declares required secrets or credential files.                                          | Approval required for secret access  |
 
 Evidence is redacted locally before rendering console, Markdown, JSON, or SARIF output.
+
+Hermes skill findings are static review signals. They are not proof of maliciousness, and the Hermes convenience skill is not an enforcement boundary. Runtime blocking depends on the Hermes policy plugin calling the local sidecar through `pre_tool_call` and receiving a blocking terminal policy decision.

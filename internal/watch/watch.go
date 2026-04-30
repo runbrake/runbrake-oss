@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/runbrake/runbrake-oss/internal/doctor"
+	"github.com/runbrake/runbrake-oss/internal/hermes"
 	"github.com/runbrake/runbrake-oss/internal/skills"
 )
 
@@ -22,6 +23,7 @@ const (
 
 type ScanOptions struct {
 	Root           string
+	Ecosystem      string
 	StatePath      string
 	WriteState     bool
 	ScannerVersion string
@@ -43,6 +45,7 @@ type ArtifactChange struct {
 
 type Result struct {
 	Root      string           `json:"root"`
+	Ecosystem string           `json:"ecosystem"`
 	StatePath string           `json:"statePath"`
 	Changes   []ArtifactChange `json:"changes"`
 }
@@ -64,6 +67,15 @@ func Scan(options ScanOptions) (Result, error) {
 	if root == "" {
 		return Result{}, fmt.Errorf("watch root is required")
 	}
+	ecosystem := normalizeEcosystem(options.Ecosystem)
+	if ecosystem != "openclaw" && ecosystem != "hermes" {
+		return Result{}, fmt.Errorf("unsupported watch ecosystem %q", options.Ecosystem)
+	}
+	canonicalRoot, err := canonicalRoot(root, ecosystem)
+	if err != nil {
+		return Result{}, err
+	}
+	root = canonicalRoot
 	now := options.Now
 	if now.IsZero() {
 		now = time.Now().UTC()
@@ -78,7 +90,7 @@ func Scan(options ScanOptions) (Result, error) {
 		return Result{}, err
 	}
 
-	targets, err := discoverArtifactTargets(root)
+	targets, err := discoverArtifactTargets(root, ecosystem)
 	if err != nil {
 		return Result{}, err
 	}
@@ -88,11 +100,12 @@ func Scan(options ScanOptions) (Result, error) {
 		UpdatedAt: now.Format(time.RFC3339),
 		Artifacts: map[string]artifactState{},
 	}
-	result := Result{Root: root, StatePath: statePath, Changes: []ArtifactChange{}}
+	result := Result{Root: root, Ecosystem: ecosystem, StatePath: statePath, Changes: []ArtifactChange{}}
 
 	for _, target := range targets {
 		scan, err := skills.Scan(skills.ScanOptions{
 			Target:         target,
+			Ecosystem:      ecosystem,
 			Now:            now,
 			ScannerVersion: options.ScannerVersion,
 			AllowDomains:   options.AllowDomains,
@@ -106,11 +119,10 @@ func Scan(options ScanOptions) (Result, error) {
 		if err != nil {
 			return Result{}, fmt.Errorf("read watched artifact %s: %w", target, err)
 		}
-		key, err := filepath.Rel(root, target)
+		key, err := artifactPathKey(root, target)
 		if err != nil {
 			return Result{}, err
 		}
-		key = filepath.ToSlash(key)
 		next.Artifacts[key] = artifactState{
 			Kind: artifact.Kind,
 			Name: artifact.Name,
@@ -143,6 +155,30 @@ func Scan(options ScanOptions) (Result, error) {
 	return result, nil
 }
 
+func ArtifactTargets(root string, ecosystem string) ([]string, error) {
+	ecosystem = normalizeEcosystem(ecosystem)
+	if ecosystem != "openclaw" && ecosystem != "hermes" {
+		return nil, fmt.Errorf("unsupported watch ecosystem %q", ecosystem)
+	}
+	canonical, err := canonicalRoot(root, ecosystem)
+	if err != nil {
+		return nil, err
+	}
+	return discoverArtifactTargets(canonical, ecosystem)
+}
+
+func canonicalRoot(root string, ecosystem string) (string, error) {
+	root = strings.TrimSpace(root)
+	if ecosystem != "hermes" {
+		return root, nil
+	}
+	discovery, err := discoverHermesHome(root)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Dir(discovery.HomeDir), nil
+}
+
 func (result Result) HasCriticalRisk() bool {
 	for _, change := range result.Changes {
 		if change.Summary.Critical > 0 {
@@ -152,7 +188,117 @@ func (result Result) HasCriticalRisk() bool {
 	return false
 }
 
-func discoverArtifactTargets(root string) ([]string, error) {
+func RenderReceiptDigest(result Result) string {
+	label := ecosystemLabel(result.Ecosystem)
+	if len(result.Changes) == 0 {
+		return fmt.Sprintf("RunBrake found no new or changed %s artifacts outside the install flow.", label)
+	}
+
+	newCount := 0
+	changedCount := 0
+	for _, change := range result.Changes {
+		switch change.Status {
+		case StatusNew:
+			newCount++
+		case StatusChanged:
+			changedCount++
+		}
+	}
+
+	var b strings.Builder
+	if changedCount == 0 {
+		fmt.Fprintf(&b, "RunBrake found %d new %s %s outside the install flow.", newCount, label, pluralize("artifact", newCount))
+	} else if newCount == 0 {
+		fmt.Fprintf(&b, "RunBrake found %d changed %s %s outside the install flow.", changedCount, label, pluralize("artifact", changedCount))
+	} else {
+		total := newCount + changedCount
+		fmt.Fprintf(&b, "RunBrake found %d new or changed %s %s outside the install flow.", total, label, pluralize("artifact", total))
+	}
+
+	for _, change := range result.Changes {
+		severity := highestSeverity(change)
+		finding := topFinding(change.Findings)
+		if finding.RuleID == "" {
+			fmt.Fprintf(&b, "\n- %s %s %s: %s", strings.ToLower(string(change.Status)), change.Kind, change.Path, severity)
+			continue
+		}
+		fmt.Fprintf(
+			&b,
+			"\n- %s %s %s: %s %s %s",
+			strings.ToLower(string(change.Status)),
+			change.Kind,
+			change.Path,
+			severity,
+			finding.RuleID,
+			finding.Title,
+		)
+	}
+	return b.String()
+}
+
+func ecosystemLabel(ecosystem string) string {
+	if normalizeEcosystem(ecosystem) == "hermes" {
+		return "Hermes"
+	}
+	return "OpenClaw"
+}
+
+func pluralize(word string, count int) string {
+	if count == 1 {
+		return word
+	}
+	return word + "s"
+}
+
+func highestSeverity(change ArtifactChange) string {
+	switch {
+	case change.Summary.Critical > 0:
+		return string(doctor.SeverityCritical)
+	case change.Summary.High > 0:
+		return string(doctor.SeverityHigh)
+	case change.Summary.Medium > 0:
+		return string(doctor.SeverityMedium)
+	case change.Summary.Low > 0:
+		return string(doctor.SeverityLow)
+	default:
+		return string(doctor.SeverityInfo)
+	}
+}
+
+func topFinding(findings []doctor.Finding) doctor.Finding {
+	if len(findings) == 0 {
+		return doctor.Finding{}
+	}
+	top := findings[0]
+	for _, finding := range findings[1:] {
+		if severityRank(finding.Severity) > severityRank(top.Severity) {
+			top = finding
+		}
+	}
+	return top
+}
+
+func severityRank(severity doctor.Severity) int {
+	switch severity {
+	case doctor.SeverityCritical:
+		return 5
+	case doctor.SeverityHigh:
+		return 4
+	case doctor.SeverityMedium:
+		return 3
+	case doctor.SeverityLow:
+		return 2
+	case doctor.SeverityInfo:
+		return 1
+	default:
+		return 0
+	}
+}
+
+func discoverArtifactTargets(root string, ecosystem string) ([]string, error) {
+	if ecosystem == "hermes" {
+		return discoverHermesArtifactTargets(root)
+	}
 	bases := []string{
 		filepath.Join(root, "skills"),
 		filepath.Join(root, "plugins"),
@@ -174,7 +320,7 @@ func discoverArtifactTargets(root string) ([]string, error) {
 			if !entry.IsDir() {
 				return nil
 			}
-			if hasManifest(path) {
+			if hasManifest(path, ecosystem) {
 				targets = append(targets, path)
 				return filepath.SkipDir
 			}
@@ -187,8 +333,70 @@ func discoverArtifactTargets(root string) ([]string, error) {
 	return targets, nil
 }
 
-func hasManifest(path string) bool {
-	for _, name := range []string{"skill.json", "plugin.json", "openclaw.plugin.json", "SKILL.md", "skill.md"} {
+func discoverHermesArtifactTargets(root string) ([]string, error) {
+	discovery, err := discoverHermesHome(root)
+	if err != nil {
+		return nil, err
+	}
+	bases := []string{}
+	bases = append(bases, discovery.SkillDirs...)
+	bases = append(bases, discovery.PluginDirs...)
+	bases = append(bases, discovery.HookDirs...)
+	bases = append(bases, discovery.ExternalSkillDirs...)
+	return discoverTargetsFromBases(bases)
+}
+
+func discoverHermesHome(root string) (hermes.Discovery, error) {
+	if filepath.Base(root) != ".hermes" {
+		nested := filepath.Join(root, ".hermes")
+		if _, statErr := os.Stat(nested); statErr == nil {
+			if discovery, err := hermes.Discover(hermes.DiscoverOptions{ExplicitPath: nested}); err == nil {
+				return discovery, nil
+			}
+		}
+	}
+	return hermes.Discover(hermes.DiscoverOptions{ExplicitPath: root})
+}
+
+func discoverTargetsFromBases(bases []string) ([]string, error) {
+	targets := []string{}
+	seenBases := map[string]bool{}
+	for _, base := range bases {
+		base = filepath.Clean(strings.TrimSpace(base))
+		if base == "." || seenBases[base] {
+			continue
+		}
+		seenBases[base] = true
+		if _, err := os.Stat(base); os.IsNotExist(err) {
+			continue
+		} else if err != nil {
+			return nil, err
+		}
+		if err := filepath.WalkDir(base, func(path string, entry os.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if !entry.IsDir() {
+				return nil
+			}
+			if hasManifest(path, "hermes") {
+				targets = append(targets, path)
+				return filepath.SkipDir
+			}
+			return nil
+		}); err != nil {
+			return nil, err
+		}
+	}
+	return sortedUnique(targets), nil
+}
+
+func hasManifest(path string, ecosystem string) bool {
+	names := []string{"skill.json", "plugin.json", "openclaw.plugin.json", "SKILL.md", "skill.md"}
+	if ecosystem == "hermes" {
+		names = append(names, "plugin.yaml", "plugin.yml", "HOOK.yaml", "HOOK.yml")
+	}
+	for _, name := range names {
 		if _, err := os.Stat(filepath.Join(path, name)); err == nil {
 			return true
 		}
@@ -203,7 +411,57 @@ func scannedArtifact(inventory doctor.Inventory) (doctor.Artifact, error) {
 	if len(inventory.Plugins) > 0 {
 		return inventory.Plugins[0], nil
 	}
-	return doctor.Artifact{}, fmt.Errorf("scan returned no skill or plugin artifact")
+	if len(inventory.Hooks) > 0 {
+		return inventory.Hooks[0], nil
+	}
+	return doctor.Artifact{}, fmt.Errorf("scan returned no skill, plugin, or hook artifact")
+}
+
+func artifactPathKey(root string, target string) (string, error) {
+	rel, err := filepath.Rel(root, target)
+	if err != nil {
+		rootAbs, rootErr := filepath.Abs(root)
+		targetAbs, targetErr := filepath.Abs(target)
+		if rootErr != nil || targetErr != nil {
+			return "", err
+		}
+		rel, err = filepath.Rel(rootAbs, targetAbs)
+		if err != nil {
+			return "", err
+		}
+		target = targetAbs
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		abs, absErr := filepath.Abs(target)
+		if absErr != nil {
+			return "", absErr
+		}
+		return filepath.ToSlash(abs), nil
+	}
+	return filepath.ToSlash(rel), nil
+}
+
+func normalizeEcosystem(value string) string {
+	ecosystem := strings.ToLower(strings.TrimSpace(value))
+	if ecosystem == "" {
+		return "openclaw"
+	}
+	return ecosystem
+}
+
+func sortedUnique(values []string) []string {
+	seen := map[string]bool{}
+	out := []string{}
+	for _, value := range values {
+		value = filepath.Clean(strings.TrimSpace(value))
+		if value == "." || seen[value] {
+			continue
+		}
+		seen[value] = true
+		out = append(out, value)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func changeStatus(previous artifactState, hash string) ChangeStatus {

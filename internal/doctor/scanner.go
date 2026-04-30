@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/runbrake/runbrake-oss/internal/hermes"
 	"github.com/runbrake/runbrake-oss/internal/redaction"
 )
 
@@ -65,6 +66,13 @@ type artifactManifest struct {
 }
 
 func Scan(options ScanOptions) (Result, error) {
+	ecosystem := normalizeEcosystem(options.Ecosystem)
+	if ecosystem == "hermes" {
+		return scanHermes(options)
+	}
+	if ecosystem != "openclaw" {
+		return Result{}, fmt.Errorf("unsupported doctor ecosystem %q", options.Ecosystem)
+	}
 	if options.Root == "" {
 		return Result{}, fmt.Errorf("scan root is required")
 	}
@@ -96,6 +104,7 @@ func Scan(options ScanOptions) (Result, error) {
 
 	result := Result{
 		Root:            options.Root,
+		Ecosystem:       "openclaw",
 		OpenClawVersion: cfg.Version,
 		Report: ScanReport{
 			ID:             "scan-" + shortHash(cfg.AgentID+"|"+now.UTC().Format(time.RFC3339)),
@@ -252,6 +261,129 @@ func Scan(options ScanOptions) (Result, error) {
 	return result, nil
 }
 
+func scanHermes(options ScanOptions) (Result, error) {
+	if options.Root == "" {
+		return Result{}, fmt.Errorf("scan root is required")
+	}
+
+	now := options.Now
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+
+	scannerVersion := options.ScannerVersion
+	if scannerVersion == "" {
+		scannerVersion = defaultScannerVersion
+	}
+
+	discovery, err := hermes.Discover(hermes.DiscoverOptions{ExplicitPath: options.Root})
+	if err != nil {
+		return Result{}, err
+	}
+
+	result := Result{
+		Root:      discovery.HomeDir,
+		Ecosystem: "hermes",
+		Report: ScanReport{
+			ID:             "scan-" + shortHash("hermes|"+discovery.HomeDir+"|"+now.UTC().Format(time.RFC3339)),
+			AgentID:        "hermes-local",
+			ScannerVersion: scannerVersion,
+			GeneratedAt:    now.UTC().Format(time.RFC3339),
+			Findings:       []Finding{},
+			ArtifactHashes: []string{},
+		},
+	}
+
+	localSkills, err := discoverHermesSkillArtifacts(discovery.HomeDir, discovery.SkillDirs, "local")
+	if err != nil {
+		return Result{}, err
+	}
+	externalSkills, err := discoverHermesSkillArtifacts(discovery.HomeDir, discovery.ExternalSkillDirs, "external")
+	if err != nil {
+		return Result{}, err
+	}
+	plugins, err := discoverHermesArtifacts(discovery.HomeDir, discovery.PluginDirs, "plugin.yaml", "plugin", "local")
+	if err != nil {
+		return Result{}, err
+	}
+	hooks, err := discoverHermesArtifacts(discovery.HomeDir, discovery.HookDirs, "HOOK.yaml", "hook", "local")
+	if err != nil {
+		return Result{}, err
+	}
+	result.Inventory = Inventory{
+		Skills:  append(localSkills, externalSkills...),
+		Plugins: plugins,
+		Hooks:   hooks,
+	}
+
+	for _, artifact := range append(append(append([]Artifact{}, result.Inventory.Skills...), result.Inventory.Plugins...), result.Inventory.Hooks...) {
+		if artifact.Hash != "" {
+			result.Report.ArtifactHashes = append(result.Report.ArtifactHashes, artifact.Hash)
+		}
+	}
+	sort.Strings(result.Report.ArtifactHashes)
+
+	findings := []Finding{}
+	add := func(ruleID string, severity Severity, confidence float64, title string, evidence []string, remediation string) {
+		evidence = cleanEvidence(evidence)
+		findings = append(findings, Finding{
+			ID:          "finding-" + shortHash(ruleID+"|"+strings.Join(evidence, "|")),
+			RuleID:      ruleID,
+			Severity:    severity,
+			Confidence:  confidence,
+			Title:       title,
+			Evidence:    evidence,
+			Remediation: remediation,
+		})
+	}
+
+	if discovery.InlineShellEnabled {
+		add(
+			"RB-HERMES-INLINE-SHELL-ENABLED",
+			SeverityMedium,
+			0.9,
+			"Hermes inline shell expansion is enabled",
+			[]string{configEvidence(discovery, "skills.inline_shell=true")},
+			"Disable inline shell expansion unless the Hermes home and installed skills are reviewed and pinned.",
+		)
+	}
+	if evidence := hermesSkillShadowEvidence(localSkills, externalSkills); len(evidence) > 0 {
+		add(
+			"RB-HERMES-EXTERNAL-SKILL-SHADOW",
+			SeverityMedium,
+			0.88,
+			"Hermes external skill shadows a local skill name",
+			evidence,
+			"Rename or remove duplicate skills so the intended Hermes skill source is unambiguous.",
+		)
+	}
+	if hookEvidence := hermesHookEvidence(discovery, hooks); len(hookEvidence) > 0 {
+		add(
+			"RB-HERMES-GATEWAY-HOOKS",
+			SeverityMedium,
+			0.86,
+			"Hermes gateway hooks are installed",
+			hookEvidence,
+			"Review installed Hermes gateway hooks and keep only hooks required for local policy enforcement.",
+		)
+	}
+	if evidence := broadHermesToolsetEvidence(discovery.Toolsets); len(evidence) > 0 {
+		add(
+			"RB-HERMES-BROAD-TOOLSET",
+			SeverityMedium,
+			0.86,
+			"Hermes config enables broad toolsets",
+			evidence,
+			"Replace broad Hermes toolsets with specific least-privilege toolsets for the skills you intend to run.",
+		)
+	}
+
+	sortFindings(findings)
+	result.Report.Findings = findings
+	result.Report.Summary = summarize(findings)
+	return result, nil
+}
+
 func addOpenClawPluginDiagnosticFindings(add func(string, Severity, float64, string, []string, string), diagnostics []OpenClawPluginDiagnostic) {
 	for _, diagnostic := range diagnostics {
 		extra := runtimeBeyondManifest(diagnostic.RuntimeTools, diagnostic.ManifestTools)
@@ -379,6 +511,128 @@ func discoverSkillLocations(root string) []skillLocation {
 		})
 	}
 	return locations
+}
+
+func discoverHermesSkillArtifacts(root string, dirs []string, installMethod string) ([]Artifact, error) {
+	return discoverHermesArtifacts(root, dirs, "SKILL.md", "skill", installMethod)
+}
+
+func discoverHermesArtifacts(root string, dirs []string, manifestName string, kind string, installMethod string) ([]Artifact, error) {
+	artifacts := []Artifact{}
+	for _, base := range dirs {
+		if _, err := os.Stat(base); errorsIsNotExist(err) {
+			continue
+		}
+		err := filepath.WalkDir(base, func(path string, entry fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if entry.IsDir() || entry.Name() != manifestName {
+				return nil
+			}
+			raw, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			name := extractHermesName(raw, filepath.Base(filepath.Dir(path)))
+			artifacts = append(artifacts, Artifact{
+				Kind:          kind,
+				Ecosystem:     "hermes",
+				Name:          name,
+				Source:        installMethod,
+				InstallMethod: installMethod,
+				ManifestPath:  hermesManifestPath(root, path),
+				Hash:          "sha256:" + hashBytes(raw),
+			})
+			return filepath.SkipDir
+		})
+		if err != nil {
+			return nil, err
+		}
+	}
+	sort.Slice(artifacts, func(i, j int) bool {
+		if artifacts[i].Name != artifacts[j].Name {
+			return artifacts[i].Name < artifacts[j].Name
+		}
+		return artifacts[i].ManifestPath < artifacts[j].ManifestPath
+	})
+	return artifacts, nil
+}
+
+func extractHermesName(raw []byte, fallback string) string {
+	manifest := string(raw)
+	if strings.HasPrefix(manifest, "---") {
+		rest := strings.TrimPrefix(manifest, "---")
+		if idx := strings.Index(rest, "---"); idx >= 0 {
+			manifest = rest[:idx]
+		}
+	}
+	for _, line := range strings.Split(manifest, "\n") {
+		trimmed := strings.TrimSpace(line)
+		key, value, ok := strings.Cut(trimmed, ":")
+		if ok && strings.TrimSpace(key) == "name" {
+			if name := strings.Trim(strings.TrimSpace(value), `"'`); name != "" {
+				return name
+			}
+		}
+	}
+	return fallback
+}
+
+func hermesManifestPath(root string, manifestPath string) string {
+	rel, err := filepath.Rel(root, manifestPath)
+	if err == nil {
+		return filepath.ToSlash(rel)
+	}
+	return filepath.ToSlash(filepath.Clean(manifestPath))
+}
+
+func configEvidence(discovery hermes.Discovery, detail string) string {
+	if discovery.ConfigPath == "" {
+		return detail
+	}
+	return fmt.Sprintf("%s in %s", detail, hermesManifestPath(discovery.HomeDir, discovery.ConfigPath))
+}
+
+func hermesSkillShadowEvidence(localSkills []Artifact, externalSkills []Artifact) []string {
+	localByName := map[string][]Artifact{}
+	for _, skill := range localSkills {
+		localByName[skill.Name] = append(localByName[skill.Name], skill)
+	}
+	evidence := []string{}
+	for _, external := range externalSkills {
+		for _, local := range localByName[external.Name] {
+			evidence = append(evidence, fmt.Sprintf("skill %s local %s shadows external %s", external.Name, local.ManifestPath, external.ManifestPath))
+		}
+	}
+	return sortedUnique(evidence)
+}
+
+func artifactEvidence(label string, artifacts []Artifact) []string {
+	evidence := []string{}
+	for _, artifact := range artifacts {
+		evidence = append(evidence, fmt.Sprintf("%s %s at %s", label, artifact.Name, artifact.ManifestPath))
+	}
+	return sortedUnique(evidence)
+}
+
+func hermesHookEvidence(discovery hermes.Discovery, hooks []Artifact) []string {
+	evidence := artifactEvidence("hook", hooks)
+	if discovery.ShellHookConfigured {
+		evidence = append(evidence, configEvidence(discovery, "hooks configured"))
+	}
+	return sortedUnique(evidence)
+}
+
+func broadHermesToolsetEvidence(toolsets []string) []string {
+	evidence := []string{}
+	for _, toolset := range toolsets {
+		normalized := strings.ToLower(strings.TrimSpace(toolset))
+		if normalized == "hermes-cli" || normalized == "all" || normalized == "*" {
+			evidence = append(evidence, "config toolset "+toolset)
+		}
+	}
+	return sortedUnique(evidence)
 }
 
 func discoverArtifacts(root string, dir string, manifestName string, kind string) ([]Artifact, error) {
@@ -745,6 +999,14 @@ func sortedUnique(values []string) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+func normalizeEcosystem(ecosystem string) string {
+	ecosystem = strings.ToLower(strings.TrimSpace(ecosystem))
+	if ecosystem == "" {
+		return "openclaw"
+	}
+	return ecosystem
 }
 
 func stringFields(fields map[string]any) map[string]string {

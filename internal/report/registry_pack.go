@@ -144,7 +144,7 @@ func topVulnerabilitiesCSV(result registry.RegistryScanReport) ([]byte, error) {
 
 func reportPackReadme(result registry.RegistryScanReport) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "# RunBrake Registry Report Pack\n\n")
+	fmt.Fprintf(&b, "# %s Report Pack\n\n", registryReportTitle(result))
 	fmt.Fprintf(&b, "Generated from registry scan `%s` at `%s`.\n\n", result.ID, result.GeneratedAt)
 	fmt.Fprintf(&b, "Files:\n\n")
 	fmt.Fprintf(&b, "- `report.md`: publication-oriented Markdown report.\n")

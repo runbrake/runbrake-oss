@@ -2,6 +2,7 @@
   "id": "runbrake-policy",
   "name": "RunBrake Policy",
   "description": "Evaluates OpenClaw tool calls and installs against a local RunBrake sidecar.",
+  "skills": ["./skills"],
   "configSchema": {
     "type": "object",
     "additionalProperties": false,

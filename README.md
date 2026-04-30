@@ -1,14 +1,14 @@
 # RunBrake OSS
 
-Open-source scanner and OpenClaw policy-plugin adapter for reviewing OpenClaw installs, skills, plugins, and public registry snapshots before they run.
+Open-source scanner and local policy adapters for reviewing OpenClaw and Hermes installs, skills, plugins, and public registry snapshots before they run.
 
-OpenClaw is powerful because skills and plugins can touch real tools, files, shell, credentials, and long-lived agent state. That is also the risk. RunBrake OSS gives developers a local-first way to inspect those artifacts, produce reviewable reports, and wire findings into CI.
+OpenClaw and Hermes are powerful because skills and plugins can touch real tools, files, shell, credentials, and long-lived agent state. That is also the risk. RunBrake OSS gives developers a local-first way to inspect those artifacts, produce reviewable reports, and wire findings into CI.
 
 This repository is the open-source trust wedge for RunBrake. The paid RunBrake control plane adds team inventory, continuous monitoring, approvals, audit retention, private approved catalogs, enterprise integrations, and hosted isolation.
 
 ## Evidence
 
-RunBrake scanned a pinned snapshot of the public OpenClaw skills repository and found:
+RunBrake scanned pinned snapshots of public OpenClaw and Hermes skill ecosystems.
 
 | Signal                       |    Count |
 | ---------------------------- | -------: |
@@ -21,9 +21,34 @@ RunBrake scanned a pinned snapshot of the public OpenClaw skills repository and 
 
 Read the full report: [OpenClaw Public Skills Risk Report](docs/security/openclaw-public-skills-risk-report-2026-04-28.md).
 
+RunBrake also scanned the official Hermes Agent repository at commit `9be3ab1a5b8ab4990b284c0a0e46ed9ae6d9fc64` and found:
+
+| Signal                  | Count |
+| ----------------------- | ----: |
+| Hermes skills scanned   | `144` |
+| Review-worthy skills    | `112` |
+| Remote-script execution |  `14` |
+| Shell-execution signals |  `36` |
+| Unknown-egress signals  | `102` |
+
+Read the full report: [Hermes Skills Risk Report](docs/security/hermes-skills-risk-report-2026-04-29.md).
+
 This is static defensive analysis. A finding means "needs review before trust," not "confirmed malicious."
 
 ## Quick Start
+
+Install the RunBrake CLI with the same Homebrew tap for OpenClaw and Hermes:
+
+```bash
+brew update
+brew install runbrake/tap/runbrake
+runbrake doctor --path ~/.openclaw
+runbrake doctor --ecosystem hermes --path ~/.hermes
+```
+
+Hermes does not require a separate Homebrew package. The tap installs the shared `runbrake` CLI; runtime/session receipts in Hermes require copying and enabling the Hermes adapter and `runbrake-security` skill in the Hermes home.
+
+For source checkout development:
 
 ```bash
 pnpm install
@@ -31,16 +56,20 @@ pnpm run ci:check
 go build -o .cache/bin/runbrake ./cmd/runbrake
 
 runbrake doctor --path ~/.openclaw
+runbrake doctor --ecosystem hermes --path ~/.hermes
 runbrake scan-skill ./skills/my-skill
+runbrake scan-skills --ecosystem hermes ~/.hermes/skills
 runbrake assess --path ~/.openclaw
+runbrake assess --ecosystem hermes --path ~/.hermes
 ```
 
 ## What It Scans
 
 - Local OpenClaw install posture.
-- OpenClaw skills and plugin packages.
+- Local Hermes install posture.
+- OpenClaw and Hermes skills and plugin packages.
 - Local folders where skills/plugins can be dropped manually.
-- Public OpenClaw/ClawHub registry snapshots.
+- Public OpenClaw/ClawHub and Hermes registry snapshots.
 - Dependency manifests and optional OSV/GHSA vulnerability enrichment.
 
 ## Commands
@@ -53,7 +82,12 @@ runbrake scan-skills ./skills
 runbrake scan-skill --dependency-scan --vuln osv --cache-dir .cache/runbrake/enrichment ./skills/my-skill
 runbrake assess --path ~/.openclaw --format markdown --output runbrake-assessment.md
 runbrake watch-openclaw --once --path ~/.openclaw
+runbrake doctor --ecosystem hermes --path ~/.hermes
+runbrake scan-skills --ecosystem hermes ~/.hermes/skills
+runbrake watch-hermes --once --path ~/.hermes
+runbrake assess --ecosystem hermes --path ~/.hermes --format markdown --output runbrake-hermes-assessment.md
 runbrake scan-registry openclaw --source github --limit 100 --format summary
+runbrake scan-registry hermes --source github --repo https://github.com/NousResearch/hermes-agent.git
 runbrake diff-scan-report --baseline previous.json --current current.json
 ```
 
@@ -95,10 +129,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: runbrake/runbrake-oss/.github/actions/runbrake-skill-scan@v0.1.1
+      - uses: runbrake/runbrake-oss/.github/actions/runbrake-skill-scan@v0.1.2
         with:
           path: .
-          version: v0.1.1
+          version: v0.1.2
           upload-sarif: "true"
 ```
 
@@ -112,7 +146,9 @@ RunBrake OSS is local-first:
 - Secret-looking evidence is redacted before console, Markdown, JSON, or SARIF rendering.
 - Remote package scans are bounded by size, file-count, timeout, and archive-expansion limits.
 - Static registry scans do not execute public skills or contact third-party services referenced by skills.
-- The OpenClaw policy-plugin adapter uses metadata-first event shapes, redacted argument summaries, and optional runtime-observation posts to a local RunBrake sidecar endpoint.
+- The local sidecar, policy engine, receipts, and audit events are local-only by default.
+- The OpenClaw and Hermes policy adapters use metadata-first event shapes, redacted argument summaries, and runtime-observation posts to the local RunBrake sidecar when runtime policy checks are enabled.
+- Scanner, doctor, registry, watch, and assessment commands work without the sidecar. Runtime enforcement and in-session receipts are optional local adapter features; if the sidecar is unavailable, adapters fail open locally and surface that state instead of blocking by surprise.
 
 See [Privacy Model](docs/security/privacy-model.md) and [Threat Model](docs/security/threat-model.md).
 
@@ -121,17 +157,20 @@ See [Privacy Model](docs/security/privacy-model.md) and [Threat Model](docs/secu
 - Local OpenClaw posture scanner.
 - Skill and plugin static scanner.
 - Public OpenClaw/ClawHub registry scanner.
+- Public Hermes registry scanner.
+- Local sidecar, local policy engine, local install/runtime decisions, local receipts, and local signed audit events.
 - Report diffing and assessment bundles.
 - SARIF and GitHub Action integration.
 - OpenClaw policy-plugin adapter.
+- Hermes policy-plugin adapter and convenience skill.
 - Public `RB-*` rules and security docs.
 - Example vulnerable skill fixtures.
 
 ## Commercial RunBrake Control Plane
 
-The hosted dashboard, team inventory, approval workflows, audit retention, private approved-skill catalog, enterprise integrations, and hosted isolation features are part of the commercial RunBrake control plane.
+The hosted dashboard, team inventory, recurring scans, hosted policy rollout, Slack/web approval workflows, retained audit history, private approved-skill catalog, enterprise integrations, and hosted isolation features are part of the commercial RunBrake control plane.
 
-The split is intentional: this repo should be inspectable and useful on its own, while teams that need continuous governance can adopt the paid product.
+The split is intentional: this repo should be inspectable and useful on one machine without an account, while teams that need continuous governance and coordination can adopt the paid product.
 
 ## Development
 

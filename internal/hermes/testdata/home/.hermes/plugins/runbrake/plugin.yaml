@@ -1,0 +1,5 @@
+name: runbrake
+version: 0.1.0
+description: Minimal RunBrake policy fixture for Hermes plugin discovery tests
+requires_env:
+  - RUNBRAKE_SIDECAR_URL

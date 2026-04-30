@@ -1,0 +1,16 @@
+{
+  "version": "2026-04-28",
+  "shadowOnly": false,
+  "defaultAction": "allow",
+  "defaultFailMode": "open",
+  "rules": [
+    {
+      "id": "policy-demo-block-shell",
+      "description": "Block shell tool calls in the developer preview demo.",
+      "action": "deny",
+      "match": {
+        "tool": "shell"
+      }
+    }
+  ]
+}

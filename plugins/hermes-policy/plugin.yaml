@@ -1,0 +1,5 @@
+name: runbrake-policy
+version: "0.1.2"
+description: RunBrake local policy adapter for Hermes Agent
+requires_env:
+  - RUNBRAKE_SIDECAR_URL
